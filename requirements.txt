@@ -1,0 +1,10 @@
+# 核心依赖
+opencv-python>=4.5.0
+numpy>=1.21.0
+Pillow>=8.0.0
+
+# 可选依赖（用于高级功能）
+scipy>=1.7.0
+
+# UI主题（可选）
+ttkthemes>=3.2.0
