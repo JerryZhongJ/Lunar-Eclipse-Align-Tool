@@ -12,6 +12,9 @@ import threading
 import gc
 from PIL import Image, ImageTk
 
+import math
+import random
+
 try:
     from scipy.fft import fft2, ifft2
     SCIPY_AVAILABLE = True
@@ -24,7 +27,7 @@ try:
 except ImportError:
     ThemedTk = None
 
-# 月食圆面对齐工具 V1.1.1 - 集成版
+# 月食圆面对齐工具 V1.1.3 - 集成版
 # 结合PHD2增强对齐、内存管理、跨平台兼容性
 # 以及IMPPG高级对齐算法
 # 基于原版本整合优化
@@ -48,7 +51,7 @@ else:
     UI_FONT = ("DejaVu Sans", 9)
 
 # ----------------- 全局默认值 -----------------
-VERSION = "1.1.1"
+VERSION = "1.1.3"
 DEFAULT_DEBUG_MODE = False
 DEFAULT_DEBUG_IMAGE_PATH = ""
 SUPPORTED_EXTS = {'.tif', '.tiff', '.bmp', '.png', '.jpg', '.jpeg'}
@@ -432,6 +435,139 @@ def multi_method_alignment(ref_image, target_image, method='auto', log_callback=
     log_debug("所有IMPPG算法都失败，将回退到圆心对齐")
     return None, None, 0, "All methods failed"
 
+# ----------------- 稳健外缘RANSAC与遮罩相位相关（新增） -----------------
+
+def _fit_circle_least_squares(points):
+    """最小二乘圆拟合（Pratt/Taubin 简化版）"""
+    if len(points) < 3:
+        return None
+    A = np.c_[2*points[:,0], 2*points[:,1], np.ones(points.shape[0])]
+    b = points[:,0]**2 + points[:,1]**2
+    try:
+        x, *_ = np.linalg.lstsq(A, b, rcond=None)
+        cx, cy = x[0], x[1]
+        r = math.sqrt(x[2] + cx*cx + cy*cy)
+        return (float(cx), float(cy), float(r))
+    except Exception:
+        return None
+
+def _fit_circle_ransac(points, iterations=120, threshold=2.0, min_inliers=40):
+    """RANSAC 圆拟合，适合混有噪声/错误边缘点的情况"""
+    if len(points) < 3:
+        return None
+    best_circle = None
+    best_inliers = 0
+    N = len(points)
+    for _ in range(iterations):
+        try:
+            idx = np.random.choice(N, 3, replace=False)
+        except ValueError:
+            return None
+        tri = points[idx]
+        cand = _fit_circle_least_squares(tri)
+        if cand is None:
+            continue
+        cx, cy, r = cand
+        d = np.sqrt((points[:,0]-cx)**2 + (points[:,1]-cy)**2)
+        inliers = np.sum(np.abs(d - r) < threshold)
+        if inliers > best_inliers:
+            best_inliers = inliers
+            mask = (np.abs(d - r) < threshold)
+            best_circle = _fit_circle_least_squares(points[mask])
+    if best_circle is not None and best_inliers >= min_inliers:
+        return best_circle
+    return None
+
+def _edge_points_outer_rim(gray, prev_circle=None):
+    """
+    提取更可靠的“外缘”边界点：
+    - 先 Canny
+    - 如有上一帧圆，限定在半径的窄环带（r*0.85~1.15）内搜边
+    - 方向性筛选：梯度大致指向外法向
+    """
+    edges = cv2.Canny(gray, 50, 150)
+    ys, xs = np.nonzero(edges)
+    if len(xs) == 0:
+        return None
+    pts = np.stack([xs, ys], axis=1).astype(np.float32)
+
+    if prev_circle is not None:
+        cx, cy, r = prev_circle
+        d = np.sqrt((pts[:,0]-cx)**2 + (pts[:,1]-cy)**2)
+        ring_mask = (d > r*0.85) & (d < r*1.15)
+        pts = pts[ring_mask]
+        if len(pts) == 0:
+            return None
+
+        # 方向性筛选：梯度方向与从中心指向边缘的外法向基本一致
+        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        keep = []
+        for x, y in pts:
+            vx, vy = x - cx, y - cy
+            nrm = math.hypot(vx, vy) + 1e-6
+            nx, ny = vx/nrm, vy/nrm       # 外法向
+            gxx = gx[int(y), int(x)]
+            gyy = gy[int(y), int(x)]
+            gn = math.hypot(gxx, gyy) + 1e-6
+            gx_n, gy_n = gxx/gn, gyy/gn   # 梯度方向
+            if (gx_n*nx + gy_n*ny) > 0.2:
+                keep.append([x, y])
+        if len(keep) >= 30:
+            pts = np.asarray(keep, dtype=np.float32)
+        elif len(pts) < 30:
+            return None
+
+    return pts
+
+def detect_circle_robust(gray, prev_circle=None):
+    """
+    稳健圆检测：外缘方向 + 环带 ROI + RANSAC。
+    - 若外缘角度覆盖不足（<120°），锁定半径仅估中心。
+    - 若失败，返回 prev_circle（由上层回退到旧路径）。
+    """
+    pts = _edge_points_outer_rim(gray, prev_circle)
+    if pts is None or len(pts) < 30:
+        return prev_circle
+
+    cand = _fit_circle_ransac(pts)
+    if cand is None:
+        return prev_circle
+
+    cx, cy, r = cand
+
+    # 角度覆盖评估（粗略）
+    vec = np.arctan2(pts[:,1]-cy, pts[:,0]-cx)
+    span = np.ptp(vec)
+    if prev_circle is not None and span < (2*np.pi/3.0):  # <120°
+        # 残月：锁半径
+        cx, cy, _ = cand
+        cx_prev, cy_prev, r_prev = prev_circle
+        cand = (cx, cy, r_prev)
+
+    return (float(cand[0]), float(cand[1]), float(cand[2]))
+
+def masked_phase_corr(ref_gray, tgt_gray, cx, cy, r):
+    """
+    只在月盘内做相位相关，忽略背景与阴影边界，得到亚像素平移。
+    返回 (dx, dy)，表示将目标再平移多少对齐到参考。
+    """
+    H, W = ref_gray.shape
+    Y, X = np.ogrid[:H, :W]
+    dist = np.sqrt((X - cx)**2 + (Y - cy)**2)
+
+    mask = (dist <= r*0.98).astype(np.float32)
+    # 柔边（汉宁窗）以减少边界伪峰
+    band = (dist >= r*0.90) & (dist <= r*0.98)
+    t = (dist[band] - r*0.90) / (r*0.08 + 1e-6)
+    mask[band] = 0.5*(1 + np.cos(np.pi*(1 - t)))
+
+    rg = (ref_gray * mask).astype(np.float32)
+    tg = (tgt_gray * mask).astype(np.float32)
+
+    (dx, dy), _ = cv2.phaseCorrelate(rg, tg)
+    return float(dx), float(dy)
+
 # ----------------- PHD2增强圆检测算法 -----------------
 
 def adaptive_preprocessing(image, brightness_mode="auto"):
@@ -519,6 +655,18 @@ def detect_circle_phd2_enhanced(image, min_radius, max_radius, param1, param2):
         best_score = 0
         detection_method = "none"
 
+        # 先尝试：稳健外缘RANSAC（优先，失败则走原有路径）
+        try:
+            robust = detect_circle_robust(processed, None)
+            if robust is not None:
+                quality = evaluate_circle_quality(processed, robust) * 1.05  # 略微偏置到稳健解
+                if quality > best_score:
+                    best_score = quality
+                    best_circle = np.array(robust, dtype=np.float32)
+                    detection_method = "稳健外缘RANSAC"
+        except Exception:
+            pass
+
         # 方法1: 标准霍夫圆检测
         try:
             height, _ = processed.shape
@@ -598,13 +746,12 @@ def detect_circle_phd2_enhanced(image, min_radius, max_radius, param1, param2):
         return None, image, 0, "error", "unknown"
 
 # ----------------- 集成对齐算法 -----------------
-
-def align_moon_images_integrated(input_folder, output_folder, hough_params,
-                                log_box=None, debug_mode=False, debug_image_basename="",
-                                completion_callback=None, progress_callback=None, 
-                                reference_image_path=None, use_advanced_alignment=False,
-                                alignment_method='auto'):
-    """集成版月球对齐算法 - 结合PHD2和IMPPG算法"""
+def align_moon_images_incremental(input_folder, output_folder, hough_params,
+                                 log_box=None, debug_mode=False, debug_image_basename="",
+                                 completion_callback=None, progress_callback=None, 
+                                 reference_image_path=None, use_advanced_alignment=False,
+                                 alignment_method='auto'):
+    """增量处理版本的月球对齐算法 - 边检测边对齐边保存"""
     memory_manager = MemoryManager()
     
     try:
@@ -631,314 +778,305 @@ def align_moon_images_integrated(input_folder, output_folder, hough_params,
         total_files = len(image_files)
         
         log("=" * 60, log_box)
-        log(f"月食圆面对齐工具 V{VERSION} - 集成版 By @正七价的氟离子", log_box)
-        log(f"系统: {SYSTEM}", log_box)
+        log(f"月食圆面对齐工具 V{VERSION} - 增量处理版", log_box)
+        log(f"处理模式: 增量处理 (边检测边保存)", log_box)
         log(f"文件总数: {total_files}", log_box)
-        log(f"霍夫圆参数: 最小半径={min_rad}, 最大半径={max_rad}, param1={param1}, param2={param2}", log_box)
         log(f"IMPPG高级算法: {'启用' if use_advanced_alignment else '禁用'}", log_box)
-        
-        if reference_image_path:
-            log(f"指定参考图像: {os.path.basename(reference_image_path)}", log_box)
-        else:
-            log("参考图像: 自动选择（质量最高）", log_box)
         log("=" * 60, log_box)
 
-        # 步骤1: 圆心检测
-        log("步骤 1/3: PHD2增强圆检测...", log_box)
+        # 第一阶段：确定参考图像
+        log("阶段 1/2: 确定参考图像...", log_box)
         
-        centers_data = {}
+        reference_image = None
+        reference_center = None
+        reference_filename = None
+        best_quality = 0
+        reference_radius = None
+        
+        # 如果用户指定了参考图像，优先使用
+        if reference_image_path and os.path.exists(reference_image_path):
+            ref_filename = os.path.basename(reference_image_path)
+            if ref_filename in image_files:
+                log(f"加载用户指定的参考图像: {ref_filename}", log_box)
+                ref_img = imread_unicode(reference_image_path, cv2.IMREAD_UNCHANGED)
+                if ref_img is not None:
+                    circle, _, quality, method, brightness = detect_circle_phd2_enhanced(
+                        ref_img, min_rad, max_rad, param1, param2
+                    )
+                    if circle is not None:
+                        reference_image = ref_img.copy()
+                        reference_center = (circle[0], circle[1])
+                        reference_filename = ref_filename
+                        best_quality = quality
+                        reference_radius = circle[2]
+                        log(f"✓ 参考图像检测成功: 质量={quality:.1f}, 方法={method}", log_box)
+                    else:
+                        log(f"✗ 参考图像检测失败，将自动选择", log_box)
+        
+        # 如果没有有效的参考图像，需要快速扫描找到最佳的
+        if reference_image is None:
+            log("自动选择参考图像 (快速扫描前10张)...", log_box)
+            scan_count = min(10, total_files)  # 只扫描前10张图片
+            
+            for i, filename in enumerate(image_files[:scan_count]):
+                if progress_callback:
+                    progress = int((i / scan_count) * 20)  # 前20%进度用于参考图像选择
+                    progress_callback(progress, f"扫描参考图像: {filename}")
+                
+                input_path = safe_join(input_folder, filename)
+                image_original = imread_unicode(input_path, cv2.IMREAD_UNCHANGED)
+                
+                if image_original is None:
+                    continue
+                
+                circle, _, quality, method, brightness = detect_circle_phd2_enhanced(
+                    image_original, min_rad, max_rad, param1, param2
+                )
+                
+                if circle is not None and quality > best_quality:
+                    # 释放之前的参考图像
+                    if reference_image is not None:
+                        del reference_image
+                    
+                    reference_image = image_original.copy()
+                    reference_center = (circle[0], circle[1])
+                    reference_filename = filename
+                    best_quality = quality
+                    reference_radius = circle[2]
+                    log(f"  候选参考图像: {filename}, 质量={quality:.1f}", log_box)
+                
+                del image_original
+                force_garbage_collection()
+        
+        if reference_image is None:
+            raise Exception("无法找到有效的参考图像，请检查图像质量和参数设置")
+        
+        log(f"🎯 最终参考图像: {reference_filename}, 质量评分={best_quality:.1f}", log_box)
+
+        # 第二阶段：增量处理所有图像
+        log(f"\n阶段 2/2: 增量处理所有图像...", log_box)
+        
+        success_count = 0
+        failed_files = []
         brightness_stats = {"bright": 0, "normal": 0, "dark": 0}
         method_stats = {}
-        failed_files = []
-        reference_image = None
         
         for i, filename in enumerate(image_files):
             if progress_callback:
-                progress = int((i / total_files) * 33)
-                progress_callback(progress, f"检测圆心: {filename}")
+                progress = 20 + int((i / total_files) * 80)  # 剩余80%进度用于处理
+                progress_callback(progress, f"处理: {filename}")
             
-            input_path = safe_join(input_folder, filename)
-            image_original = imread_unicode(input_path, cv2.IMREAD_UNCHANGED)
-
-            if image_original is None:
-                log(f"警告: 无法读取 {filename}，已跳过", log_box)
-                failed_files.append(filename)
-                continue
-
-            # 检测圆心
-            circle, processed, quality, method, brightness = detect_circle_phd2_enhanced(
-                image_original, min_rad, max_rad, param1, param2
-            )
-
-            if circle is not None:
-                center = (circle[0], circle[1])
-                radius = circle[2]
+            try:
+                input_path = safe_join(input_folder, filename)
                 
-                centers_data[filename] = {
-                    "center": center,
-                    "radius": radius,
-                    "quality": quality,
-                    "method": method,
-                    "brightness": brightness,
-                    "input_path": input_path,
-                    "image": image_original.copy()  # 保存完整图像用于IMPPG
-                }
-                
-                # 选择质量最高的作为潜在参考图像
-                if reference_image is None or quality > centers_data.get('_ref_quality', 0):
-                    reference_image = image_original.copy()
-                    centers_data['_ref_quality'] = quality
-                    centers_data['_ref_file'] = filename
-                
-                # 为调试保存处理后的图像
-                if debug_mode and filename == debug_image_basename:
-                    centers_data[filename]["processed"] = processed.copy()
-
-                log(f"  ✓ {filename}: 中心=({center[0]:.1f}, {center[1]:.1f}), 质量={quality:.1f}, 方法={method}", log_box)
-
-                brightness_stats[brightness] += 1
-                method_stats[method] = method_stats.get(method, 0) + 1
-            else:
-                log(f"  ✗ {filename}: 检测失败", log_box)
-                failed_files.append(filename)
-
-            # 立即释放大图像内存（除非是参考图像候选）
-            if not (circle is not None and quality == centers_data.get('_ref_quality', 0)):
-                del image_original
-            if 'processed' in locals():
-                del processed
-            
-            # 定期清理内存
-            if i % 5 == 0:
-                memory_manager.clear_old_images()
-
-        log(f"\n检测统计: 成功={len(centers_data) - 2}/{total_files}, 失败={len(failed_files)}", log_box)
-        if failed_files:
-            log(f"失败文件: {', '.join(failed_files[:5])}" + ("..." if len(failed_files) > 5 else ""), log_box)
-        
-        log(f"亮度分布: 明亮={brightness_stats['bright']}, 正常={brightness_stats['normal']}, 暗={brightness_stats['dark']}", log_box)
-        if method_stats:
-            log(f"方法分布: {', '.join([f'{k}={v}' for k, v in method_stats.items()])}", log_box)
-
-        # 清理临时数据
-        ref_quality = centers_data.pop('_ref_quality', 0)
-        ref_filename = centers_data.pop('_ref_file', '')
-        
-        if not centers_data:
-            raise Exception("所有图像均未能检测到圆心。建议调整参数后重试。")
-
-        # 确定参考图像和基准中心
-        reference_filename = None
-        reference_center = None
-        
-        if reference_image_path and os.path.exists(reference_image_path):
-            # 用户指定了参考图像
-            reference_filename = os.path.basename(reference_image_path)
-            if reference_filename in centers_data:
-                reference_center = centers_data[reference_filename]["center"]
-                reference_image = centers_data[reference_filename]["image"]
-                log(f"\n✓ 使用用户指定的参考图像: {reference_filename}", log_box)
-                log(f"参考图像质量评分: {centers_data[reference_filename]['quality']:.1f}", log_box)
-            else:
-                log(f"警告: 指定的参考图像 {reference_filename} 未能成功检测圆心，将自动选择", log_box)
-        
-        if reference_center is None:
-            # 使用质量最高的图像作为参考
-            reference_filename = ref_filename
-            if reference_filename in centers_data:
-                reference_center = centers_data[reference_filename]["center"]
-                reference_image = centers_data[reference_filename]["image"]
-            log(f"\n🎯 自动选择参考图像: {reference_filename}", log_box)
-            log(f"参考图像质量评分: {ref_quality:.1f} (所有图像中质量最高)", log_box)
-
-        # 步骤2: 计算对齐偏移
-        if progress_callback:
-            progress_callback(33, "计算对齐偏移...")
-        
-        log(f"\n步骤 2/3: {'IMPPG高级对齐' if use_advanced_alignment else '传统圆心对齐'}...", log_box)
-        
-        alignment_results = {}
-        
-        if use_advanced_alignment and reference_image is not None and alignment_method != 'circle_only':
-            log("使用IMPPG高级对齐算法...", log_box)
-            log(f"参考图像: {reference_filename}", log_box)
-            
-            for i, (filename, data) in enumerate(centers_data.items()):
-                if progress_callback:
-                    progress = 33 + int((i / len(centers_data)) * 33)
-                    progress_callback(progress, f"IMPPG对齐: {filename}")
-                
+                # 处理参考图像
                 if filename == reference_filename:
-                    # 参考图像不需要偏移
-                    alignment_results[filename] = {
-                        'shift_x': 0.0,
-                        'shift_y': 0.0,
-                        'confidence': 1.0,
-                        'method': 'Reference Image',
-                        'original_data': data
-                    }
-                    log(f"  🎯 {filename}: [参考图像] 偏移=(0.0, 0.0)", log_box)
+                    # 直接保存参考图像，无需变换
+                    output_path = safe_join(output_folder, f"aligned_{filename}")
+                    if imwrite_unicode(output_path, reference_image):
+                        success_count += 1
+                        log(f"  🎯 {filename}: [参考图像] 已保存", log_box)
+                        
+                        # 处理调试图像
+                        if debug_mode and filename == debug_image_basename:
+                            self._save_debug_image(reference_image, reference_center, 
+                                                 reference_center, 0, 0, 1.0, "Reference Image",
+                                                 debug_output_folder, filename, reference_filename)
+                    else:
+                        log(f"  ✗ {filename}: 保存失败", log_box)
+                        failed_files.append(filename)
                     continue
                 
-                target_image = data["image"]
+                # 加载目标图像
+                target_image = imread_unicode(input_path, cv2.IMREAD_UNCHANGED)
+                if target_image is None:
+                    log(f"  ✗ {filename}: 读取失败", log_box)
+                    failed_files.append(filename)
+                    continue
                 
-                # 使用高级对齐算法
-                shift_x, shift_y, confidence, method = multi_method_alignment(
-                    reference_image, target_image, alignment_method, 
-                    lambda msg: log(msg, log_box)
+                # 检测圆心
+                circle, processed, quality, method, brightness = detect_circle_phd2_enhanced(
+                    target_image, min_rad, max_rad, param1, param2
                 )
                 
-                # 如果高级算法失败，回退到圆心对齐
-                if shift_x is None or (shift_x == 0 and shift_y == 0 and confidence < 0.2):
-                    log(f"  {filename}: IMPPG算法失败，回退到圆心对齐", log_box)
-                    # 计算圆心偏移
-                    ref_center = reference_center
-                    target_center = data["center"]
-                    shift_x = ref_center[0] - target_center[0]
-                    shift_y = ref_center[1] - target_center[1]
-                    confidence = 0.8
-                    method = "Circle Center Fallback"
+                if circle is None:
+                    log(f"  ✗ {filename}: 圆检测失败", log_box)
+                    failed_files.append(filename)
+                    del target_image
+                    continue
                 
-                alignment_results[filename] = {
-                    'shift_x': shift_x,
-                    'shift_y': shift_y,
-                    'confidence': confidence,
-                    'method': method,
-                    'original_data': data
-                }
+                # 统计信息
+                brightness_stats[brightness] += 1
+                method_stats[method] = method_stats.get(method, 0) + 1
                 
-                log(f"  {filename}: 偏移=({shift_x:.1f}, {shift_y:.1f}), "
-                   f"置信度={confidence:.3f}, {method[:30]}", log_box)
-        else:
-            # 传统圆心对齐
-            log("使用传统圆心对齐...", log_box)
-            log(f"基准中心: ({reference_center[0]:.1f}, {reference_center[1]:.1f})", log_box)
-            
-            for i, (filename, data) in enumerate(centers_data.items()):
-                if progress_callback:
-                    progress = 33 + int((i / len(centers_data)) * 33)
-                    progress_callback(progress, f"圆心对齐: {filename}")
+                target_center = (circle[0], circle[1])
                 
-                center = data["center"]
+                # 计算对齐偏移（圆心对齐路径）
+                shift_x = reference_center[0] - target_center[0]
+                shift_y = reference_center[1] - target_center[1]
+
+                # 用圆质量分映射为置信度（不启用 IMPPG 时）
+                confidence = max(0.30, min(0.98, quality / 100.0))
+                align_method = "Circle Center"
                 
-                if filename == reference_filename:
-                    shift_x = 0.0
-                    shift_y = 0.0
-                    log(f"  🎯 {filename}: [参考图像] 偏移=(0.0, 0.0), 质量={data['quality']:.1f}", log_box)
+                if use_advanced_alignment and alignment_method != 'circle_only':
+                    # 使用IMPPG高级算法
+                    adv_shift_x, adv_shift_y, adv_confidence, adv_method = multi_method_alignment(
+                        reference_image, target_image, alignment_method,
+                        lambda msg: log(f"      {msg}", log_box)
+                    )
+                    
+                    # 如果高级算法成功，使用其结果
+                    if adv_shift_x is not None and adv_confidence > 0.2:
+                        shift_x, shift_y = adv_shift_x, adv_shift_y
+                        confidence = adv_confidence
+                        align_method = adv_method
+                    else:
+                        # 回退到圆心对齐
+                        shift_x = reference_center[0] - target_center[0]
+                        shift_y = reference_center[1] - target_center[1]
+                        align_method = "Circle Center (Fallback)"
                 else:
-                    shift_x = reference_center[0] - center[0]
-                    shift_y = reference_center[1] - center[1]
-                    log(f"  ✓ {filename}: 偏移=({shift_x:.1f}, {shift_y:.1f}), 质量={data['quality']:.1f}", log_box)
+                    # 传统圆心对齐
+                    shift_x = reference_center[0] - target_center[0]
+                    shift_y = reference_center[1] - target_center[1]
                 
-                alignment_results[filename] = {
-                    'shift_x': shift_x,
-                    'shift_y': shift_y,
-                    'confidence': 0.8,
-                    'method': 'Circle Center',
-                    'original_data': data
-                }
+                # 应用变换
+                rows, cols = target_image.shape[:2]
+                translation_matrix = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
+                aligned_image = cv2.warpAffine(
+                    target_image, translation_matrix, (cols, rows),
+                    flags=cv2.INTER_LANCZOS4,
+                    borderMode=cv2.BORDER_CONSTANT,
+                    borderValue=0
+                )
 
-        # 步骤3: 应用变换并保存
-        log(f"\n步骤 3/3: 应用变换并保存...", log_box)
-        
-        success_count = 0
-        
-        for i, (filename, result) in enumerate(alignment_results.items()):
-            if progress_callback:
-                progress = 66 + int((i / len(alignment_results)) * 34)
-                progress_callback(progress, f"保存对齐图像: {filename}")
-            
-            # 重新加载图像进行对齐（释放内存压力）
-            if 'image' not in result['original_data']:
-                image_to_align = imread_unicode(result['original_data']['input_path'], cv2.IMREAD_UNCHANGED)
-            else:
-                image_to_align = result['original_data']['image']
-            
-            if image_to_align is None:
-                log(f"  ✗ {filename}: 重新加载失败", log_box)
-                continue
-
-            shift_x = result['shift_x']
-            shift_y = result['shift_y']
-
-            #执行对齐
-            rows, cols = image_to_align.shape[:2]
-            translation_matrix = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
-            aligned_image = cv2.warpAffine(
-                image_to_align, translation_matrix, (cols, rows),
-                flags=cv2.INTER_LANCZOS4,
-                borderMode=cv2.BORDER_CONSTANT,
-                borderValue=0  # 填充黑色
-           )
-
-            # 保存对齐后的图像
-            output_path = safe_join(output_folder, f"aligned_{filename}")
-            if imwrite_unicode(output_path, aligned_image):
-                success_count += 1
-            else:
-                log(f"  ✗ {filename}: 保存失败", log_box)
-
-            # 处理调试图像
-            if debug_mode and filename == debug_image_basename and "processed" in result['original_data']:
+                # 亚像素微调：遮罩相位相关（仅在参考圆存在时）
                 try:
-                    debug_image = cv2.cvtColor(result['original_data']["processed"], cv2.COLOR_GRAY2BGR)
-                    center = result['original_data']["center"]
-                    radius = result['original_data']["radius"]
+                    if reference_radius is not None:
+                        ref_gray = cv2.cvtColor(reference_image, cv2.COLOR_BGR2GRAY) if len(reference_image.shape) > 2 else reference_image
+                        tgt_gray2 = cv2.cvtColor(aligned_image, cv2.COLOR_BGR2GRAY) if len(aligned_image.shape) > 2 else aligned_image
+                        dx2, dy2 = masked_phase_corr(ref_gray, tgt_gray2, float(reference_center[0]), float(reference_center[1]), float(reference_radius))
+                        if abs(dx2) > 1e-3 or abs(dy2) > 1e-3:
+                            M2 = np.float32([[1, 0, dx2], [0, 1, dy2]])
+                            aligned_image = cv2.warpAffine(aligned_image, M2, (cols, rows),
+                                                           flags=cv2.INTER_LANCZOS4,
+                                                           borderMode=cv2.BORDER_CONSTANT,
+                                                           borderValue=0)
+                except Exception:
+                    pass
+                
+                # 立即保存对齐后的图像
+                output_path = safe_join(output_folder, f"aligned_{filename}")
+                if imwrite_unicode(output_path, aligned_image):
+                    success_count += 1
+                    log(f"  ✓ {filename}: 偏移=({shift_x:.1f}, {shift_y:.1f}), "
+                       f"置信度={confidence:.3f}, 质量={quality:.1f} - 已保存", log_box)
                     
-                    # 绘制检测结果
-                    cv2.circle(debug_image, (int(center[0]), int(center[1])), int(radius), (0, 255, 0), 3)
-                    cv2.circle(debug_image, (int(center[0]), int(center[1])), 5, (0, 0, 255), -1)
-                    cv2.circle(debug_image, (int(reference_center[0]), int(reference_center[1])), 15, (255, 255, 0), 3)
-                    cv2.line(debug_image, (int(center[0]), int(center[1])),
-                             (int(reference_center[0]), int(reference_center[1])), (0, 255, 255), 2)
-
-                    # 添加信息
-                    font = cv2.FONT_HERSHEY_SIMPLEX
-                    font_scale = 0.7
-                    thickness = 2
-                    
-                    texts = [
-                        f"Method: {result['method'][:30]}",
-                        f"Quality: {result['original_data']['quality']:.1f}",
-                        f"Shift: ({shift_x:.1f}, {shift_y:.1f})",
-                        f"Confidence: {result['confidence']:.3f}",
-                        f"System: {SYSTEM}",
-                        f"Reference: {reference_filename}",
-                        f"IMPPG: {'ON' if use_advanced_alignment else 'OFF'}"
-                    ]
-                    
-                    for j, text in enumerate(texts):
-                        cv2.putText(debug_image, text, (10, 30 + j * 30),
-                                    font, font_scale, (255, 255, 255), thickness)
-
-                    debug_path = safe_join(debug_output_folder, f"debug_{filename}")
-                    imwrite_unicode(debug_path, debug_image)
-                except Exception as e:
-                    log(f"调试图像生成失败: {e}", log_box)
-
-            # 立即释放内存
-            del image_to_align, aligned_image
-            force_garbage_collection()
+                    # 处理调试图像
+                    if debug_mode and filename == debug_image_basename and processed is not None:
+                        self._save_debug_image(processed, target_center, reference_center,
+                                             shift_x, shift_y, confidence, align_method,
+                                             debug_output_folder, filename, reference_filename)
+                else:
+                    log(f"  ✗ {filename}: 变换成功但保存失败", log_box)
+                    failed_files.append(filename)
+                
+                # 立即释放内存
+                del target_image, aligned_image
+                if 'processed' in locals():
+                    del processed
+                force_garbage_collection()
+                
+            except Exception as e:
+                log(f"  ✗ {filename}: 处理异常 - {e}", log_box)
+                failed_files.append(filename)
+                # 确保内存被释放
+                for var_name in ['target_image', 'aligned_image', 'processed']:
+                    if var_name in locals():
+                        del locals()[var_name]
+                force_garbage_collection()
 
         if progress_callback:
             progress_callback(100, "处理完成")
 
+        # 清理参考图像
+        del reference_image
+        force_garbage_collection()
+
+        # 输出统计信息
         log("=" * 60, log_box)
-        log(f"集成对齐完成! 成功对齐 {success_count}/{len(alignment_results)} 张图像", log_box)
+        log(f"增量对齐完成! 成功对齐 {success_count}/{total_files} 张图像", log_box)
         log(f"使用参考图像: {reference_filename}", log_box)
         log(f"对齐算法: {'IMPPG高级算法' if use_advanced_alignment else 'PHD2圆心算法'}", log_box)
+        
+        if failed_files:
+            log(f"失败文件({len(failed_files)}): {', '.join(failed_files[:5])}" + 
+               ("..." if len(failed_files) > 5 else ""), log_box)
+        
+        log(f"亮度分布: 明亮={brightness_stats['bright']}, 正常={brightness_stats['normal']}, 暗={brightness_stats['dark']}", log_box)
+        if method_stats:
+            log(f"检测方法: {', '.join([f'{k}={v}' for k, v in method_stats.items()])}", log_box)
+        
         log(f"当前内存使用: {get_memory_usage_mb():.1f} MB", log_box)
+        
         if completion_callback:
-            completion_callback(True, f"成功对齐 {success_count}/{len(alignment_results)} 张图像！")
+            completion_callback(True, f"增量处理完成！成功对齐 {success_count}/{total_files} 张图像")
 
     except Exception as e:
         import traceback
-        error_msg = f"处理过程中发生错误: {e}\n{traceback.format_exc()}"
+        error_msg = f"增量处理过程中发生错误: {e}\n{traceback.format_exc()}"
         log(error_msg, log_box)
         if completion_callback:
             completion_callback(False, error_msg)
     finally:
         force_garbage_collection()
+
+def _save_debug_image(self, processed_img, target_center, reference_center, 
+                     shift_x, shift_y, confidence, method, 
+                     debug_output_folder, filename, reference_filename):
+    """保存调试图像的辅助函数"""
+    try:
+        if processed_img is None:
+            return
+            
+        # 转换为BGR用于绘制
+        if len(processed_img.shape) == 2:
+            debug_image = cv2.cvtColor(processed_img, cv2.COLOR_GRAY2BGR)
+        else:
+            debug_image = processed_img.copy()
+        
+        # 绘制检测结果
+        # 检测到的圆心 (红色)
+        cv2.circle(debug_image, (int(target_center[0]), int(target_center[1])), 5, (0, 0, 255), -1)
+        # 参考圆心位置 (黄色)
+        cv2.circle(debug_image, (int(reference_center[0]), int(reference_center[1])), 15, (0, 255, 255), 3)
+        # 连接线
+        cv2.line(debug_image, (int(target_center[0]), int(target_center[1])),
+                 (int(reference_center[0]), int(reference_center[1])), (0, 255, 255), 2)
+
+        # 添加文本信息
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.6
+        thickness = 2
+        
+        texts = [
+            f"Method: {method[:35]}",
+            f"Shift: ({shift_x:.1f}, {shift_y:.1f})",
+            f"Confidence: {confidence:.3f}",
+            f"Reference: {reference_filename}",
+            f"Mode: Incremental Processing"
+        ]
+        
+        for j, text in enumerate(texts):
+            cv2.putText(debug_image, text, (10, 25 + j * 25),
+                        font, font_scale, (255, 255, 255), thickness)
+
+        debug_path = safe_join(debug_output_folder, f"debug_{filename}")
+        imwrite_unicode(debug_path, debug_image)
+        
+    except Exception as e:
+        print(f"调试图像生成失败: {e}")
 
 def log(msg, log_box=None):
     """跨平台日志输出"""
@@ -1328,7 +1466,7 @@ class UniversalLunarAlignApp:
         ttk.Button(ref_btn_frame, text="清除", command=self.clear_reference_image).pack(side="left", padx=(2,0))
         
         # 提示文本
-        help_text = ttk.Label(frame, text="💡 参考图像：作为对齐基准的图像。留空则自动选择质量最佳的图像。", 
+        help_text = ttk.Label(frame, text="💡参考图像：作为对齐基准的图像。请在预览&半径估计窗口选择。", 
                               font=(UI_FONT[0], UI_FONT[1]-1), foreground="gray")
         help_text.grid(row=3, column=0, columnspan=3, sticky="w", padx=5, pady=(2,5))
 
@@ -1656,7 +1794,7 @@ class UniversalLunarAlignApp:
                 progress_window.update_progress(progress, status)
 
         threading.Thread(
-            target=align_moon_images_integrated,
+            target=align_moon_images_incremental,
             args=(in_path, out_path, hough_params, self.log_box, dbg_mode, dbg_basename,
                   self.on_alignment_complete, progress_callback, ref_path, 
                   use_advanced, method),
