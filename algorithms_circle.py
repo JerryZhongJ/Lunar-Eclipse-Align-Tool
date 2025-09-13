@@ -1,0 +1,333 @@
+# algorithms_circle.py
+import math, time
+import numpy as np
+import cv2
+
+from utils_common import (
+    imread_unicode, safe_join, log, force_garbage_collection
+)
+
+# ============== 预处理 & 质量评估 ==============
+
+def adaptive_preprocessing(image, brightness_mode="auto"):
+    """将图像转换为适合圆检测的灰度，并做适度增强。返回 (processed_gray, brightness_mode)"""
+    if image.ndim > 2:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image.copy()
+    if gray.dtype != np.uint8:
+        gray = cv2.normalize(gray.astype(np.float32), None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+
+    mean_brightness = float(np.mean(gray))
+    if brightness_mode == "auto":
+        if mean_brightness > 140:
+            brightness_mode = "bright"
+        elif mean_brightness < 70:
+            brightness_mode = "dark"
+        else:
+            brightness_mode = "normal"
+
+    if brightness_mode == "bright":
+        filtered = cv2.bilateralFilter(gray, 9, 75, 75)
+    elif brightness_mode == "dark":
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+        filtered = cv2.bilateralFilter(enhanced, 9, 75, 75)
+    else:
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+        filtered = cv2.bilateralFilter(enhanced, 9, 75, 75)
+
+    return filtered, brightness_mode
+
+
+def evaluate_circle_quality(image_gray, circle):
+    """对检测到的圆做一个稳定的质量打分，越大越好（0~100）。"""
+    try:
+        cx, cy, radius = int(circle[0]), int(circle[1]), int(circle[2])
+        h, w = image_gray.shape[:2]
+        if (cx - radius < 5 or cy - radius < 5 or
+            cx + radius >= w - 5 or cy + radius >= h - 5):
+            return 0.0
+
+        angles = np.linspace(0, 2 * np.pi, 48)
+        edge_strengths = []
+        for angle in angles:
+            ix = int(cx + (radius - 2) * np.cos(angle))
+            iy = int(cy + (radius - 2) * np.sin(angle))
+            ox = int(cx + (radius + 2) * np.cos(angle))
+            oy = int(cy + (radius + 2) * np.sin(angle))
+            if 0 <= ix < w and 0 <= iy < h and 0 <= ox < w and 0 <= oy < h:
+                inner_val = float(image_gray[iy, ix])
+                outer_val = float(image_gray[oy, ox])
+                edge_strengths.append(abs(outer_val - inner_val))
+
+        if not edge_strengths:
+            return 0.0
+
+        avg_edge = float(np.mean(edge_strengths))
+        consistency = 1.0 / (1.0 + np.std(edge_strengths) / max(1.0, avg_edge))
+        score = avg_edge * consistency
+        return float(min(100.0, score))
+    except Exception:
+        return 0.0
+
+# ============== 稳健外缘 RANSAC（用于血月/缺口） ==============
+
+def _fit_circle_least_squares(points):
+    if len(points) < 3:
+        return None
+    A = np.c_[2*points[:,0], 2*points[:,1], np.ones(points.shape[0])]
+    b = points[:,0]**2 + points[:,1]**2
+    try:
+        x, *_ = np.linalg.lstsq(A, b, rcond=None)
+        cx, cy = x[0], x[1]
+        r = math.sqrt(x[2] + cx*cx + cy*cy)
+        return (float(cx), float(cy), float(r))
+    except Exception:
+        return None
+
+def _fit_circle_ransac(points, iterations=120, threshold=2.0, min_inliers=40):
+    if len(points) < 3:
+        return None
+    best_circle = None
+    best_inliers = 0
+    N = len(points)
+    for _ in range(iterations):
+        try:
+            idx = np.random.choice(N, 3, replace=False)
+        except ValueError:
+            return None
+        tri = points[idx]
+        cand = _fit_circle_least_squares(tri)
+        if cand is None:
+            continue
+        cx, cy, r = cand
+        d = np.sqrt((points[:,0]-cx)**2 + (points[:,1]-cy)**2)
+        inliers = np.sum(np.abs(d - r) < threshold)
+        if inliers > best_inliers:
+            best_inliers = inliers
+            mask = (np.abs(d - r) < threshold)
+            best_circle = _fit_circle_least_squares(points[mask])
+    if best_circle is not None and best_inliers >= min_inliers:
+        return best_circle
+    return None
+
+def _edge_points_outer_rim(gray, prev_circle=None):
+    edges = cv2.Canny(gray, 50, 150)
+    ys, xs = np.nonzero(edges)
+    if len(xs) == 0:
+        return None
+    pts = np.stack([xs, ys], axis=1).astype(np.float32)
+
+    if prev_circle is not None:
+        cx, cy, r = prev_circle
+        d = np.sqrt((pts[:,0]-cx)**2 + (pts[:,1]-cy)**2)
+        ring_mask = (d > r*0.85) & (d < r*1.15)
+        pts = pts[ring_mask]
+        if len(pts) == 0:
+            return None
+
+        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        keep = []
+        for x, y in pts:
+            vx, vy = x - cx, y - cy
+            nrm = math.hypot(vx, vy) + 1e-6
+            nx, ny = vx/nrm, vy/nrm
+            gxx = gx[int(y), int(x)]
+            gyy = gy[int(y), int(x)]
+            gn = math.hypot(gxx, gyy) + 1e-6
+            gx_n, gy_n = gxx/gn, gyy/gn
+            if (gx_n*nx + gy_n*ny) > 0.2:
+                keep.append([x, y])
+        if len(keep) >= 30:
+            pts = np.asarray(keep, dtype=np.float32)
+        elif len(pts) < 30:
+            return None
+
+    return pts
+
+def detect_circle_robust(gray, prev_circle=None):
+    pts = _edge_points_outer_rim(gray, prev_circle)
+    if pts is None or len(pts) < 30:
+        return prev_circle
+    cand = _fit_circle_ransac(pts)
+    if cand is None:
+        return prev_circle
+    cx, cy, r = cand
+    vec = np.arctan2(pts[:,1]-cy, pts[:,0]-cx)
+    span = np.ptp(vec)
+    if prev_circle is not None and span < (2*np.pi/3.0):  # <120°
+        cx_prev, cy_prev, r_prev = prev_circle
+        cand = (cx, cy, r_prev)
+    return (float(cand[0]), float(cand[1]), float(cand[2]))
+
+# ============== 遮罩相位相关（亚像素平移微调） ==============
+
+def masked_phase_corr(ref_gray, tgt_gray, cx, cy, r):
+    H, W = ref_gray.shape
+    Y, X = np.ogrid[:H, :W]
+    dist = np.sqrt((X - cx)**2 + (Y - cy)**2)
+
+    mask = (dist <= r*0.98).astype(np.float32)
+    band = (dist >= r*0.90) & (dist <= r*0.98)
+    t = (dist[band] - r*0.90) / (r*0.08 + 1e-6)
+    mask[band] = 0.5*(1 + np.cos(np.pi*(1 - t)))
+
+    rg = (ref_gray * mask).astype(np.float32)
+    tg = (tgt_gray * mask).astype(np.float32)
+
+    (dx, dy), _ = cv2.phaseCorrelate(rg, tg)
+    return float(dx), float(dy)
+
+# ============== 辅助：粗估 & 环形 ROI（抑制星点/加速霍夫） ==============
+
+def _rough_center_radius(gray, min_r, max_r):
+    g = cv2.GaussianBlur(gray, (0, 0), 2.0)
+    thr = max(10, int(np.mean(g) + 0.3 * np.std(g)))
+    _, bw = cv2.threshold(g, thr, 255, cv2.THRESH_BINARY)
+    bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN,
+                          cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), 1)
+    cnts, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return None
+    c = max(cnts, key=cv2.contourArea)
+    (cx, cy), r = cv2.minEnclosingCircle(c)
+    if r < min_r * 0.6 or r > max_r * 1.6:
+        return None
+    return float(cx), float(cy), float(r)
+
+def _ring_mask(h, w, cx, cy, r, inner=0.70, outer=1.15):
+    Y, X = np.ogrid[:h, :w]
+    dist = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
+    m = ((dist >= r * inner) & (dist <= r * outer)).astype(np.uint8) * 255
+    return m
+
+# ============== 主检测（供 pipeline 调用） ==============
+
+def detect_circle_phd2_enhanced(image, min_radius, max_radius, param1, param2):
+    """
+    返回: (best_circle [cx, cy, r], processed_gray, quality, method_str, brightness_mode)
+    失败: (None, processed_or_input_gray, 0, 'error', 'unknown')
+    """
+    try:
+        t0 = time.time()
+        processed, brightness_mode = adaptive_preprocessing(image, "auto")
+        best_circle, best_score, detection_method = None, 0.0, "none"
+
+        H, W = processed.shape
+        proc_for_hough = processed
+
+        # —— 粗估中心半径，构建环形 ROI —— #
+        est = _rough_center_radius(processed, min_radius, max_radius)
+        if est is not None:
+            cx0, cy0, r0 = est
+            ring = _ring_mask(H, W, cx0, cy0, r0, inner=0.70, outer=1.15)
+            proc_for_hough = cv2.bitwise_and(processed, processed, mask=ring)
+        else:
+            max_side = max(H, W)
+            if max_side > 1800:
+                scale = 1800.0 / max_side
+                small = cv2.resize(processed, (int(W * scale), int(H * scale)), interpolation=cv2.INTER_AREA)
+                s_min = max(1, int(min_radius * scale))
+                s_max = max(s_min + 1, int(max_radius * scale))
+                try:
+                    sc = cv2.HoughCircles(
+                        small, cv2.HOUGH_GRADIENT,
+                        dp=1.2, minDist=small.shape[0] // 2,
+                        param1=param1, param2=max(param2 - 5, 10),
+                        minRadius=s_min, maxRadius=s_max,
+                    )
+                    if sc is not None:
+                        c = sc[0][0]
+                        circle = np.array([c[0] / scale, c[1] / scale, c[2] / scale], dtype=np.float32)
+                        q = evaluate_circle_quality(processed, circle) * 1.02
+                        if q > best_score:
+                            best_score, best_circle = q, circle
+                            detection_method = "缩放霍夫(thumb)"
+                except Exception:
+                    pass
+
+        # —— 稳健外缘 RANSAC —— #
+        try:
+            robust = detect_circle_robust(processed, None)
+            if robust is not None:
+                q = evaluate_circle_quality(processed, robust) * 1.05
+                if q > best_score:
+                    best_score = q
+                    best_circle = np.array(robust, dtype=np.float32)
+                    detection_method = "稳健外缘RANSAC"
+        except Exception:
+            pass
+
+        # —— 标准霍夫（在 ROI 上） —— #
+        try:
+            height, _ = processed.shape
+            circles = cv2.HoughCircles(
+                proc_for_hough, cv2.HOUGH_GRADIENT,
+                dp=1, minDist=height,
+                param1=param1, param2=param2,
+                minRadius=min_radius, maxRadius=max_radius,
+            )
+            if circles is not None:
+                for c in circles[0]:
+                    q = evaluate_circle_quality(processed, c)
+                    if q > best_score:
+                        best_score, best_circle = q, c
+                        detection_method = f"标准霍夫(P1={param1},P2={param2})"
+        except Exception:
+            pass
+
+        # —— 自适应参数霍夫（在 ROI 上） —— #
+        if best_score < 15:
+            try:
+                if brightness_mode == "bright":
+                    ap1, ap2 = param1 + 20, max(param2 - 5, 10)
+                elif brightness_mode == "dark":
+                    ap1, ap2 = max(param1 - 15, 20), max(param2 - 10, 5)
+                else:
+                    ap1, ap2 = param1, max(param2 - 8, 8)
+
+                circles2 = cv2.HoughCircles(
+                    proc_for_hough, cv2.HOUGH_GRADIENT,
+                    dp=1.2, minDist=height // 2,
+                    param1=ap1, param2=ap2,
+                    minRadius=min_radius, maxRadius=max_radius,
+                )
+                if circles2 is not None:
+                    for c in circles2[0]:
+                        q = evaluate_circle_quality(processed, c)
+                        if q > best_score:
+                            best_score, best_circle = q, c
+                            detection_method = f"自适应霍夫(P1={ap1},P2={ap2})"
+            except Exception:
+                pass
+
+        # —— 轮廓备选 —— #
+        if best_score < 10:
+            try:
+                mean_val = float(np.mean(processed))
+                tv = max(50, int(mean_val * 0.7))
+                _, binary = cv2.threshold(processed, tv, 255, cv2.THRESH_BINARY)
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+                contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for cnt in contours:
+                    area = cv2.contourArea(cnt)
+                    if min_radius ** 2 * np.pi * 0.3 <= area <= max_radius ** 2 * np.pi * 2.0:
+                        (cx, cy), r = cv2.minEnclosingCircle(cnt)
+                        if min_radius <= r <= max_radius:
+                            c = np.array([cx, cy, r])
+                            q = evaluate_circle_quality(processed, c) * 0.7
+                            if q > best_score:
+                                best_score, best_circle = q, c
+                                detection_method = f"轮廓检测(T={tv})"
+            except Exception:
+                pass
+
+        return best_circle, processed, best_score, detection_method, brightness_mode
+
+    except Exception:
+        gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        return None, gray, 0, "error", "unknown"
