@@ -11,9 +11,6 @@ import platform
 IS_WINDOWS = platform.system() == "Windows"
 IS_MACOS = platform.system() == "Darwin"
 
-# 本代码由 @正七价的氟离子 原始创建，ChatGPT、Manus AI、Claude优化与注释
-# 感谢南京大学@黄喵 帮忙修改代码，﻿@黑灯kuro﻿ 提出想法，﻿@无尽碗莲﻿ ﻿@摄影师无敌武士兔﻿ @飞翔的荷兰者 李老师 ﻿@UIN丨huaji﻿ 提供素材和图片用于测试
-
 def main():
     try:
         if ThemedTk is not None:
