@@ -191,6 +191,8 @@ class UniversalLunarAlignApp:
         self.root.geometry("920x800"); self.root.minsize(750, 700)
         self.setup_cross_platform()
         self.preview_window = None; self.progress_window = None
+        self._about_photo = None  # cache to avoid GC in About window
+        self._qr_photo = None  # cache QR image to avoid GC
         self._init_vars()
         self._create_main_layout(); self._create_path_widgets()
         self._create_param_widgets(); self._create_imppg_widgets()
@@ -293,7 +295,7 @@ class UniversalLunarAlignApp:
                      "• 建议在偏食/生光阶段启用，多数情况默认关闭即可")
         ttk.Label(f, text=algo_help, justify="left",
                   font=(UI_FONT[0], UI_FONT[1]-2), foreground="darkgreen").pack(anchor="w", padx=5, pady=(5,10))
-        ttk.Label(f, text="⚠️ 实验性功能", font=(UI_FONT[0], UI_FONT[1]-1),
+        ttk.Label(f, text="⚠️ 实验性功能，不推荐开启", font=(UI_FONT[0], UI_FONT[1]-1),
                   foreground="orange", justify="center").pack(pady=5)
 
     def _create_debug_widgets(self):
@@ -326,6 +328,8 @@ class UniversalLunarAlignApp:
             self.start_button.configure(style="Accent.TButton")
         except Exception:
             pass
+        # 关于作者按钮
+        ttk.Button(f, text="关于作者", command=self.show_about_author).pack(pady=(0, 0))
 
     def _create_log_widgets(self):
         lp = ttk.Frame(self.root, padding=(10,5,10,10))
@@ -461,3 +465,102 @@ class UniversalLunarAlignApp:
             self.progress_window.destroy(); self.progress_window = None
         if success: messagebox.showinfo("处理完成", message)
         else: messagebox.showerror("处理失败", "处理过程中发生错误，详情请查看日志。", detail=message)
+
+    def show_about_author(self):
+        """弹出关于作者窗口，显示头像、说明与支付宝二维码（若存在）。"""
+        top = tk.Toplevel(self.root)
+        top.title("关于作者")
+        top.resizable(False, False)
+        top.transient(self.root)
+        top.grab_set()
+
+        frm = ttk.Frame(top, padding=16)
+        frm.pack(fill="both", expand=True)
+
+        # 新布局：0=文本区(含标题+头像)，1=分隔线，2=二维码
+        frm.grid_columnconfigure(0, weight=1)   # text (with inline avatar)
+        frm.grid_columnconfigure(1, weight=0)   # separator
+        frm.grid_columnconfigure(2, weight=0)   # QR
+
+        # 路径准备
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        avatar_path = None
+        for name in ("avatar.jpg", "avatar.png", "avatar.jpeg"):
+            p = os.path.join(base_dir, name)
+            if os.path.exists(p):
+                avatar_path = p
+                break
+
+        qr_path = None
+        for name in ("QRcode.jpg", "QRcode.png", "QRcode.jpeg"):
+            p = os.path.join(base_dir, name)
+            if os.path.exists(p):
+                qr_path = p
+                break
+
+        # 标题+头像并排（头像在标题右侧），横向填满，头像贴近右侧分隔线
+        header = ttk.Frame(frm)
+        # 让标题行横向填满，使头像可贴近右侧分隔线
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        header.grid_columnconfigure(0, weight=1)  # 标题占满左侧
+        header.grid_columnconfigure(1, weight=0)  # 头像靠右
+
+        title_lbl = ttk.Label(header, text="正七价的氟离子", font=(UI_FONT[0], UI_FONT[1] + 4, "bold"))
+        title_lbl.grid(row=0, column=0, sticky="w")
+
+        # 头像放在标题右侧，并与右侧分隔线对齐（靠右）
+        avatar_lbl = ttk.Label(header)
+        avatar_lbl.grid(row=0, column=1, sticky="e", padx=(10, 0))
+        try:
+            if avatar_path:
+                im = Image.open(avatar_path).convert("RGBA")
+                max_side = 100  # 放大头像，并与右侧分隔线对齐更醒目
+                scale = min(max_side / im.width, max_side / im.height, 1.0)
+                if scale < 1.0:
+                    im = im.resize((int(im.width * scale), int(im.height * scale)), Image.LANCZOS)
+                self._about_photo = ImageTk.PhotoImage(im)
+                avatar_lbl.configure(image=self._about_photo)
+        except Exception:
+            pass
+
+        desc = (
+            "在家带娃的奶妈，不会写程序的天文爱好者不是老司机。\n"
+            "感谢使用《月食圆面对齐工具》，欢迎反馈与交流！\n"
+            "如果您愿意，欢迎支持一点养娃的奶粉钱（右侧支付宝二维码）。"
+        )
+        ttk.Label(
+            frm,
+            text=desc,
+            justify="left",
+            wraplength=440,   # 控制换行，不会顶到二维码
+        ).grid(row=1, column=0, sticky="nw")
+
+        # 垂直分隔线
+        sep = ttk.Separator(frm, orient="vertical")
+        sep.grid(row=0, column=1, rowspan=3, sticky="ns", padx=14)
+
+        # 右：二维码与说明
+        qr_panel = ttk.Frame(frm)
+        qr_panel.grid(row=0, column=2, rowspan=3, sticky="ne")
+
+        qr_label = ttk.Label(qr_panel)
+        qr_label.pack(side="top", anchor="ne")
+
+        try:
+            if qr_path:
+                qr = Image.open(qr_path).convert("RGBA")
+                target_w = 240  # 稍收窄，避免喧宾夺主
+                scale = min(target_w / qr.width, 1.0)
+                if scale < 1.0:
+                    qr = qr.resize((int(qr.width * scale), int(qr.height * scale)), Image.LANCZOS)
+                self._qr_photo = ImageTk.PhotoImage(qr)
+                qr_label.configure(image=self._qr_photo)
+        except Exception:
+            pass
+
+        ttk.Label(qr_panel, text="支付宝 · 打赏支持", foreground="gray40").pack(side="top", pady=(6, 0))
+
+        # 底部按钮条（右对齐）
+        btn_bar = ttk.Frame(frm)
+        btn_bar.grid(row=3, column=0, columnspan=3, sticky="e", pady=(12, 0))
+        ttk.Button(btn_bar, text="关闭", command=top.destroy).pack(side="right")
