@@ -1,4 +1,3 @@
-# pipeline.py
 import os, math, time
 import cv2, numpy as np
 
@@ -110,7 +109,7 @@ def save_debug_image(processed_img, target_center, reference_center,
         print(f"调试图像生成失败: {e}")
 
 # ------------------ 缩略图辅助 ------------------
-def _detect_circle_on_thumb(img, min_r, max_r, p1, p2, max_side=1600):
+def _detect_circle_on_thumb(img, min_r, max_r, p1, p2, max_side=1600, strong_denoise=False):
     """
     在缩略图上做一次圆检测，返回 (ok, (cx,cy,r), scale, quality, method)
     成功时 (True, circle_fullres, scale, quality, method)；失败时 (False, None, scale, 0, '')
@@ -126,7 +125,7 @@ def _detect_circle_on_thumb(img, min_r, max_r, p1, p2, max_side=1600):
     s_max = max(s_min + 1, int(max_r * scale))
 
     t0 = time.time()
-    circle_s, _, quality_s, method_s, _ = detect_circle_phd2_enhanced(small, s_min, s_max, p1, p2)
+    circle_s, _, quality_s, method_s, _ = detect_circle_phd2_enhanced(small, s_min, s_max, p1, p2, strong_denoise=strong_denoise)
     dt = time.time() - t0
 
     if circle_s is None:
@@ -142,7 +141,7 @@ def align_moon_images_incremental(input_folder, output_folder, hough_params,
                                  log_box=None, debug_mode=False, debug_image_basename="",
                                  completion_callback=None, progress_callback=None,
                                  reference_image_path=None, use_advanced_alignment=False,
-                                 alignment_method='auto'):
+                                 alignment_method='auto', strong_denoise=False):
     memory_manager = MemoryManager()
     try:
         input_folder = normalize_path(input_folder)
@@ -190,7 +189,7 @@ def align_moon_images_incremental(input_folder, output_folder, hough_params,
 
                 # 先在缩略图做，映射回原图
                 ok, circle, scale, q, meth = _detect_circle_on_thumb(
-                    ref_img, min_rad, max_rad, param1, param2, max_side=1600
+                    ref_img, min_rad, max_rad, param1, param2, max_side=1600, strong_denoise=strong_denoise
                 )
                 if ok:
                     reference_image = ref_img.copy()
@@ -203,7 +202,7 @@ def align_moon_images_incremental(input_folder, output_folder, hough_params,
                     log("缩略图检测失败，回退到原图做一次圆检测（可能较慢）...", log_box)
                     t1 = time.time()
                     circle_full, _, qf, mf, _ = detect_circle_phd2_enhanced(
-                        ref_img, min_rad, max_rad, param1, param2
+                        ref_img, min_rad, max_rad, param1, param2, strong_denoise=strong_denoise
                     )
                     dt1 = time.time() - t1
                     if circle_full is not None:
@@ -231,7 +230,7 @@ def align_moon_images_incremental(input_folder, output_folder, hough_params,
                     continue
 
                 ok, circle, scale, q, meth = _detect_circle_on_thumb(
-                    img0, min_rad, max_rad, param1, param2, max_side=1600
+                    img0, min_rad, max_rad, param1, param2, max_side=1600, strong_denoise=strong_denoise
                 )
                 if ok and q > best_quality:
                     if reference_image is not None: del reference_image
@@ -258,6 +257,11 @@ def align_moon_images_incremental(input_folder, output_folder, hough_params,
 
         # 为速度统计
         t_all0 = time.time()
+
+        # 以参考图圆作为先验，后续逐帧更新
+        last_circle = None
+        if reference_center is not None and reference_radius is not None:
+            last_circle = (float(reference_center[0]), float(reference_center[1]), float(reference_radius))
 
         for i, filename in enumerate(image_files):
             if progress_callback:
@@ -289,7 +293,8 @@ def align_moon_images_incremental(input_folder, output_folder, hough_params,
                 # 圆检测
                 t_det = time.time()
                 circle, processed, quality, method, brightness = detect_circle_phd2_enhanced(
-                    target_image, min_rad, max_rad, param1, param2
+                    target_image, min_rad, max_rad, param1, param2,
+                    strong_denoise=strong_denoise, prev_circle=last_circle
                 )
                 dt_det = time.time() - t_det
 
@@ -342,10 +347,10 @@ def align_moon_images_incremental(input_folder, output_folder, hough_params,
                             tx = float(M2[0,2])
                             ty = float(M2[1,2])
                             residual = (tx**2 + ty**2) ** 0.5
-                            log(f"    [Refine] 残差=\u0394{residual:.2f}px", log_box)
+                            log(f"    [Refine] 残差=Δ{residual:.2f}px", log_box)
                             if residual > max_refine_delta_px:
                                 M2 = None
-                                log(f"    [Refine] 残差过大(\u0394={residual:.2f}px > {max_refine_delta_px:.1f}px)，放弃精配准并保持霍夫平移", log_box)
+                                log(f"    [Refine] 残差过大(Δ={residual:.2f}px > {max_refine_delta_px:.1f}px)，放弃精配准并保持霍夫平移", log_box)
                         if M2 is not None:
                             aligned = cv2.warpAffine(
                                 aligned, M2, (cols, rows),
@@ -392,6 +397,11 @@ def align_moon_images_incremental(input_folder, output_folder, hough_params,
                 out_path = safe_join(output_folder, f"aligned_{filename}")
                 if imwrite_unicode(out_path, aligned):
                     success_count += 1
+                    # 更新上一帧先验
+                    try:
+                        last_circle = (float(circle[0]), float(circle[1]), float(circle[2]))
+                    except Exception:
+                        pass
                     log(f"  ✓ {filename}: 偏移=({shift_x:.1f},{shift_y:.1f}), "
                         f"质量={quality:.1f}, 置信度={confidence:.3f}, 圆检耗时={dt_det:.2f}s, 读取={dt_read:.2f}s | {align_method}", log_box)
 
