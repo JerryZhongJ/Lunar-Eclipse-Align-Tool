@@ -2,4 +2,4 @@
 A small tool for aligning lunar eclipse data.
 
 
-The latest version is V1.1.5
+The latest version is V1.2.0-beta
