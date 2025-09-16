@@ -1,4 +1,3 @@
-# algorithms_circle.py
 import math, time
 import numpy as np
 import cv2
@@ -227,9 +226,93 @@ def _ring_mask(h, w, cx, cy, r, inner=0.70, outer=1.15):
     m = ((dist >= r * inner) & (dist <= r * outer)).astype(np.uint8) * 255
     return m
 
+# ============== 边缘亚像素细化（统一在返回前做一次） ==============
+def _refine_circle_subpixel(det_gray, circle, search_px=3, samples=180):
+    """在已检测到的圆附近做一次亚像素细化。
+    det_gray: 用于检测的灰度图；circle: (cx,cy,r)
+    返回 (cx,cy,r) 或原 circle（失败）。"""
+    try:
+        import numpy as _np
+        import cv2 as _cv2
+        h, w = det_gray.shape[:2]
+        cx, cy, r = float(circle[0]), float(circle[1]), float(circle[2])
+        if r <= 3:
+            return circle
+        g = _cv2.GaussianBlur(det_gray, (3,3), 0)
+        gx = _cv2.Sobel(g, _cv2.CV_32F, 1, 0, ksize=3)
+        gy = _cv2.Sobel(g, _cv2.CV_32F, 0, 1, ksize=3)
+        thetas = _np.linspace(0, 2*_np.pi, samples, endpoint=False)
+        pts = []
+        for th in thetas:
+            nx, ny = _np.cos(th), _np.sin(th)
+            best_s, best_val = 0.0, -1e9
+            for s in range(-int(search_px), int(search_px)+1):
+                x = int(round(cx + (r + s) * nx))
+                y = int(round(cy + (r + s) * ny))
+                if 0 <= x < w and 0 <= y < h:
+                    val = float(gx[y,x]*nx + gy[y,x]*ny)
+                    if val > best_val:
+                        best_val = val
+                        best_s = s
+            x = cx + (r + best_s) * nx
+            y = cy + (r + best_s) * ny
+            if 0 <= x < w and 0 <= y < h:
+                pts.append([x, y])
+        if len(pts) < max(48, samples//3):
+            return circle
+        P = _np.asarray(pts, dtype=_np.float32)
+        A = _np.c_[2*P[:,0], 2*P[:,1], _np.ones(P.shape[0])]
+        b = P[:,0]**2 + P[:,1]**2
+        x, *_ = _np.linalg.lstsq(A, b, rcond=None)
+        cx2, cy2 = float(x[0]), float(x[1])
+        r2 = float(_np.sqrt(max(1e-6, x[2] + cx2*cx2 + cy2*cy2)))
+        if _np.hypot(cx2-cx, cy2-cy) > max(2.5, 0.01*r) or abs(r2-r) > max(2.5, 0.01*r):
+            return circle
+        return (cx2, cy2, r2)
+    except Exception:
+        return circle
+
+# ============== UI 调参可视化：分析区域掩膜（仅供显示） ==============
+def build_analysis_mask(img_gray, brightness_min=3/255.0, min_radius=None, max_radius=None):
+    """
+    仅供 UI 调参窗口显示“分析区域”用：
+    - uint8 归一化 -> 轻度去噪
+    - Otsu 阈值 与 亮度下限并联
+    - 形态学开运算清点
+    - 仅保留最大连通域
+    返回 bool(H,W)。不影响主流程检测。
+    """
+    try:
+        g = img_gray
+        if g is None:
+            return np.zeros((1,1), dtype=bool)
+        if g.dtype != np.uint8:
+            g = cv2.normalize(g.astype(np.float32), None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        g = cv2.GaussianBlur(g, (3,3), 0)
+        _, otsu = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        floor_t = max(1, int(round(float(brightness_min) * 255.0)))
+        _, floor = cv2.threshold(g, floor_t, 255, cv2.THRESH_BINARY)
+        m = cv2.bitwise_and(otsu, floor)
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
+        m = cv2.morphologyEx(m, cv2.MORPH_OPEN, k, iterations=1)
+        cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not cnts:
+            return np.zeros_like(m, dtype=bool)
+        c = max(cnts, key=cv2.contourArea)
+        keep = np.zeros_like(m)
+        cv2.drawContours(keep, [c], -1, 255, thickness=cv2.FILLED)
+        return keep.astype(bool)
+    except Exception:
+        # 兜底：整图 False
+        shape = (1,1) if img_gray is None else img_gray.shape[:2]
+        return np.zeros(shape, dtype=bool)
+
+# 兼容 UI 中的优先调用名
+build_analysis_mask_ui = build_analysis_mask
+
 # ============== 主检测（供 pipeline 调用） ==============
 
-def detect_circle_phd2_enhanced(image, min_radius, max_radius, param1, param2):
+def detect_circle_phd2_enhanced(image, min_radius, max_radius, param1, param2, strong_denoise=False, prev_circle=None):
     """
     返回: (best_circle [cx, cy, r], processed_gray, quality, method_str, brightness_mode)
     失败: (None, processed_or_input_gray, 0, 'error', 'unknown')
@@ -238,6 +321,15 @@ def detect_circle_phd2_enhanced(image, min_radius, max_radius, param1, param2):
         t0 = time.time()
         TIME_BUDGET = 6.0  # seconds per frame guard for extreme cases
         processed, brightness_mode = adaptive_preprocessing(image, "auto")
+        # 可选：强力降噪（仅影响检测，不影响最终成片）
+        if strong_denoise:
+            try:
+                # fast NLM 能在强噪场景下保持边缘
+                processed = cv2.fastNlMeansDenoising(processed, None, h=10, templateWindowSize=7, searchWindowSize=21)
+                # 轻度中值进一步压盐胡椒
+                processed = cv2.medianBlur(processed, 3)
+            except Exception:
+                pass
         best_circle, best_score, detection_method = None, 0.0, "none"
 
         # Use a detection-optimized copy to make Hough/RANSAC more stable on glare/bloom frames
@@ -251,6 +343,16 @@ def detect_circle_phd2_enhanced(image, min_radius, max_radius, param1, param2):
             cx0, cy0, r0 = est
             ring = _ring_mask(H, W, cx0, cy0, r0, inner=0.70, outer=1.15)
             proc_for_hough = cv2.bitwise_and(processed_det, processed_det, mask=ring)
+        # —— 若给出上一帧圆心半径，合并一个“历史先验”环形 ROI —— #
+        if prev_circle is not None and all(np.isfinite(prev_circle)):
+            try:
+                pcx, pcy, pr = float(prev_circle[0]), float(prev_circle[1]), float(prev_circle[2])
+                inner = max(0.70, min(0.85, (min_radius/max(pr,1e-6)) * 0.9))
+                outer = min(1.30, max(1.15, (max_radius/max(pr,1e-6)) * 1.05))
+                ring_prev = _ring_mask(H, W, pcx, pcy, pr, inner=inner, outer=outer)
+                proc_for_hough = cv2.bitwise_and(proc_for_hough, proc_for_hough, mask=ring_prev)
+            except Exception:
+                pass
         else:
             max_side = max(H, W)
             if max_side > 1800:
@@ -441,6 +543,34 @@ def detect_circle_phd2_enhanced(image, min_radius, max_radius, param1, param2):
                     best_circle = np.array([cxp - pad, cyp - pad, rp], dtype=np.float32)
                     best_score = q_adj
                     detection_method = f"{detection_method}+pad0({pad})" if detection_method else f"pad0({pad})"
+
+        # —— 最终半径窗口一致性检查（严格遵守 UI 设定） —— #
+        try:
+            if best_circle is not None:
+                rr = float(best_circle[2])
+                if not (float(min_radius) <= rr <= float(max_radius)):
+                    # 在严格窗口内再做一次快速霍夫重试
+                    height, width = processed_det.shape
+                    _minDist_coreS = max(16, min(height, width) // 4)
+                    scS = cv2.HoughCircles(
+                        processed_det, cv2.HOUGH_GRADIENT,
+                        dp=1.2, minDist=_minDist_coreS,
+                        param1=max(param1, 20), param2=max(param2-5, 8),
+                        minRadius=int(max(1, min_radius)), maxRadius=int(max_radius)
+                    )
+                    if scS is not None:
+                        bestS = None; bestQS = -1.0
+                        for c in scS[0]:
+                            if float(min_radius) <= float(c[2]) <= float(max_radius):
+                                q = float(evaluate_circle_quality(processed, c))
+                                if q > bestQS:
+                                    bestQS = q; bestS = c
+                        if bestS is not None:
+                            best_circle = bestS
+                            best_score = bestQS
+                            detection_method = f"{detection_method}|strict-window"
+        except Exception:
+            pass
 
         return best_circle, processed, best_score, detection_method, brightness_mode
 
