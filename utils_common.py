@@ -3,6 +3,10 @@ import os, sys, platform, gc
 import numpy as np
 import cv2
 from PIL import Image
+try:
+    import piexif
+except Exception:
+    piexif = None
 import tkinter as tk
 
 # ----------------- 系统/常量 -----------------
@@ -11,7 +15,7 @@ IS_WINDOWS = SYSTEM == "Windows"
 IS_MACOS = SYSTEM == "Darwin"
 IS_LINUX = SYSTEM == "Linux"
 
-VERSION = "1.1.5"
+VERSION = "1.2.0-beta"
 DEFAULT_DEBUG_MODE = False
 DEFAULT_DEBUG_IMAGE_PATH = ""
 SUPPORTED_EXTS = {'.tif', '.tiff', '.bmp', '.png', '.jpg', '.jpeg'}
@@ -122,6 +126,77 @@ def imwrite_unicode(path, image):
     except Exception as e:
         print(f"图像保存失败 {path}: {e}")
         return False
+
+def imwrite_with_exif(src_path, dst_path, img_bgr):
+    """
+    优先保留 src_path 的 EXIF/ICC，用 Pillow 写出 JPEG/TIFF。
+    失败或不支持时回退到 imwrite_unicode。
+    参数:
+        src_path: 原始读取图像的文件路径(用于提取EXIF/ICC)
+        dst_path: 目标输出路径
+        img_bgr:  OpenCV(BGR) 图像
+    返回: bool 是否写出成功
+    """
+    try:
+        dst_path = normalize_path(dst_path)
+        parent_dir = os.path.dirname(dst_path)
+        if not ensure_dir_exists(parent_dir):
+            return False
+
+        ext = os.path.splitext(dst_path)[1].lower()
+        # 仅在 JPEG/TIFF 尝试保EXIF，其余格式走原逻辑
+        if ext not in (".jpg", ".jpeg", ".tif", ".tiff"):
+            return imwrite_unicode(dst_path, img_bgr)
+
+        # Pillow 不可用则直接回退
+        if Image is None:
+            return imwrite_unicode(dst_path, img_bgr)
+
+        # BGR -> RGB
+        try:
+            rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        except Exception:
+            # 如果颜色转换失败，仍尝试直接构建
+            rgb = img_bgr
+        im = Image.fromarray(rgb)
+
+        exif_bytes = None
+        icc = None
+        # 读取源图的 EXIF 与 ICC
+        try:
+            with Image.open(src_path) as src_im:
+                exif_bytes = src_im.info.get("exif", None)
+                icc = src_im.info.get("icc_profile", None)
+                # 将 Orientation 归一到 1，避免查看器再次旋转
+                if exif_bytes and piexif is not None:
+                    try:
+                        exif_dict = piexif.load(exif_bytes)
+                        exif_dict["0th"][piexif.ImageIFD.Orientation] = 1
+                        exif_bytes = piexif.dump(exif_dict)
+                    except Exception:
+                        # EXIF 解析失败则保持原样
+                        pass
+        except Exception:
+            pass
+
+        save_kwargs = {}
+        if exif_bytes is not None:
+            save_kwargs["exif"] = exif_bytes
+        if icc is not None:
+            save_kwargs["icc_profile"] = icc
+
+        if ext in (".jpg", ".jpeg"):
+            # 设一个较高质量，保持文件体积与质量平衡
+            save_kwargs.setdefault("quality", 95)
+            im.save(dst_path, **save_kwargs)
+        else:  # TIFF
+            # 无损/轻压缩
+            save_kwargs.setdefault("compression", "tiff_deflate")
+            im.save(dst_path, **save_kwargs)
+        return True
+    except Exception:
+        # 任意异常回退
+        return imwrite_unicode(dst_path, img_bgr)
 
 def to_display_rgb(img):
     if img is None:
