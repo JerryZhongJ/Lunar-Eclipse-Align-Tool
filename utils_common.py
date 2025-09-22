@@ -1,12 +1,13 @@
 # utils_common.py
 import os, sys, platform, gc
+from typing import Any
+from cv2.typing import NumPyArrayNumeric
 import numpy as np
 import cv2
 from PIL import Image
-try:
-    import piexif
-except Exception:
-    piexif = None
+
+import piexif
+
 import tkinter as tk
 
 # ----------------- 系统/常量 -----------------
@@ -19,17 +20,6 @@ VERSION = "1.2.0-beta"
 DEFAULT_DEBUG_MODE = False
 DEFAULT_DEBUG_IMAGE_PATH = ""
 SUPPORTED_EXTS = {'.tif', '.tiff', '.bmp', '.png', '.jpg', '.jpeg'}
-
-# 根据系统设置默认字体
-if IS_WINDOWS:
-    DEFAULT_FONT = ("Microsoft YaHei", 9)
-    UI_FONT = ("Microsoft YaHei", 9)
-elif IS_MACOS:
-    DEFAULT_FONT = ("SF Pro Display", 13)
-    UI_FONT = ("SF Pro Display", 13)
-else:
-    DEFAULT_FONT = ("DejaVu Sans", 9)
-    UI_FONT = ("DejaVu Sans", 9)
 
 # 内存管理
 MAX_IMAGES_IN_MEMORY = 10
@@ -82,7 +72,7 @@ def ensure_dir_exists(dir_path):
 def safe_join(*paths):
     return normalize_path(os.path.join(*paths))
 
-def imread_unicode(path, flags=cv2.IMREAD_UNCHANGED):
+def imread_unicode(path, flags=cv2.IMREAD_UNCHANGED) ->  np.ndarray[Any, np.dtype[np.integer[Any] | np.floating[Any]]] | None:
     try:
         path = normalize_path(path)
         if not IS_WINDOWS or path.isascii():
@@ -198,23 +188,21 @@ def imwrite_with_exif(src_path, dst_path, img_bgr):
         # 任意异常回退
         return imwrite_unicode(dst_path, img_bgr)
 
-def to_display_rgb(img):
+def to_display_rgb(img: np.ndarray) -> np.ndarray:
     if img is None:
         return None
-    try:
-        img_float = img.astype(np.float32)
-        img_u8 = cv2.normalize(img_float, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-        if img_u8.ndim == 2:
-            return cv2.cvtColor(img_u8, cv2.COLOR_GRAY2RGB)
-        elif img_u8.shape[2] == 4:
-            return cv2.cvtColor(img_u8, cv2.COLOR_BGRA2RGB)
-        elif img_u8.shape[2] == 3:
-            return cv2.cvtColor(img_u8, cv2.COLOR_BGR2RGB)
-        else:
-            return cv2.cvtColor(img_u8[:,:,:3], cv2.COLOR_BGR2RGB)
-    except Exception as e:
-        print(f"图像转换失败: {e}")
-        return None
+
+    img = img.astype(np.float32)
+    cv2.normalize(img, img, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+    if img.ndim == 2:
+        return cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+    elif img.shape[2] == 4:
+        return cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
+    elif img.shape[2] == 3:
+        return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    else:
+        return cv2.cvtColor(img[:,:,:3], cv2.COLOR_BGR2RGB)
+
 
 # 统一日志
 def log(msg, log_box=None):

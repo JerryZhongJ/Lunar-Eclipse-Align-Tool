@@ -3,12 +3,10 @@ opencv-python
 numpy
 pillow
 psutil
+PySide6
 
 #打包
 pyinstaller
 
 # 可选依赖（用于高级功能）
 scipy>=1.7.0
-
-# UI主题（可选）
-ttkthemes>=3.2.0
