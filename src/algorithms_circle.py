@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from enum import Enum
 import logging
 import math, time
 from typing import Any, Generator, Generic, TypeVar, overload
@@ -10,10 +11,20 @@ from numpy._typing._array_like import NDArray
 from utils import Circle, Hough, PositionArray, Vector, VectorArray
 from skimage.measure import CircleModel, ransac
 
+
+class BrightnessMode(Enum):
+    AUTO = "auto"
+    BRIGHT = "bright"
+    NORMAL = "normal"
+    DARK = "dark"
+
+
 # ============== 预处理 & 质量评估 ==============
 
 
-def adaptive_preprocessing(image: np.ndarray, brightness_mode="auto"):
+def adaptive_preprocessing(
+    image: NDArray, brightness_mode: BrightnessMode
+) -> tuple[NDArray, BrightnessMode]:
     """将图像转换为适合圆检测的灰度，并做适度增强。返回 (processed_gray, brightness_mode)"""
     if image.ndim > 2:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -25,17 +36,17 @@ def adaptive_preprocessing(image: np.ndarray, brightness_mode="auto"):
         )
 
     mean_brightness = float(np.mean(gray))
-    if brightness_mode == "auto":
+    if brightness_mode == BrightnessMode.AUTO:
         if mean_brightness > 140:
-            brightness_mode = "bright"
+            brightness_mode = BrightnessMode.BRIGHT
         elif mean_brightness < 70:
-            brightness_mode = "dark"
+            brightness_mode = BrightnessMode.DARK
         else:
-            brightness_mode = "normal"
+            brightness_mode = BrightnessMode.NORMAL
 
-    if brightness_mode == "bright":
+    if brightness_mode == BrightnessMode.BRIGHT:
         filtered = cv2.bilateralFilter(gray, 9, 75, 75)
-    elif brightness_mode == "dark":
+    elif brightness_mode == BrightnessMode.DARK:
         clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(gray)
         filtered = cv2.bilateralFilter(enhanced, 9, 75, 75)
@@ -49,31 +60,35 @@ def adaptive_preprocessing(image: np.ndarray, brightness_mode="auto"):
 
 def evaluate_circle_quality(image_gray: NDArray, circle: Circle) -> float:
     """对检测到的圆做一个稳定的质量打分，越大越好（0~100）。"""
-    try:
-        cx, cy, radius = circle.x, circle.y, circle.radius
-        h, w = image_gray.shape[:2]
 
-        angles = np.linspace(0, 2 * np.pi, 48)
-        edge_strengths = []
-        for angle in angles:
-            ix = int(cx + (radius - 2) * np.cos(angle))
-            iy = int(cy + (radius - 2) * np.sin(angle))
-            ox = int(cx + (radius + 2) * np.cos(angle))
-            oy = int(cy + (radius + 2) * np.sin(angle))
-            if 0 <= ix < w and 0 <= iy < h and 0 <= ox < w and 0 <= oy < h:
-                inner_val = float(image_gray[iy, ix])
-                outer_val = float(image_gray[oy, ox])
-                edge_strengths.append(abs(outer_val - inner_val))
+    h, w = image_gray.shape[:2]
 
-        if not edge_strengths:
-            return 0.0
-
-        avg_edge = float(np.mean(edge_strengths))
-        consistency = 1.0 / (1.0 + np.std(edge_strengths) / max(1.0, avg_edge))
-        score = avg_edge * consistency
-        return float(min(100.0, score))
-    except Exception:
+    angles = np.linspace(0, 2 * np.pi, 48)
+    directions = VectorArray(
+        np.column_stack((np.cos(angles), np.sin(angles))), safe=False
+    )
+    inners: PositionArray = directions * (circle.radius - 2) + circle
+    outers: PositionArray = directions * (circle.radius + 2) + circle
+    mask = (
+        0 <= inners.x < w
+        and 0 <= inners.y < h
+        and 0 <= outers.x < w
+        and 0 <= outers.y < h
+    )
+    if not np.sum(mask):
         return 0.0
+
+    inners = inners.filter(mask)
+    outers = outers.filter(mask)
+
+    inner_vals = image_gray[inners.y.astype(int), inners.x.astype(int)]
+    outer_vals = image_gray[outers.y.astype(int), outers.x.astype(int)]
+    edge_strengths = np.abs(outer_vals - inner_vals)
+
+    avg_edge = float(np.mean(edge_strengths))
+    consistency = 1.0 / (1.0 + np.std(edge_strengths) / max(1.0, avg_edge))
+    score = avg_edge * consistency
+    return float(min(100.0, score))
 
 
 # ============== 高光裁剪和星点抑制辅助 ==============
@@ -199,7 +214,7 @@ def masked_phase_corr(ref_gray: NDArray, tgt_gray: NDArray, circle: Circle) -> V
 # ============== 辅助：粗估 & 环形 ROI（抑制星点/加速霍夫） ==============
 
 
-def _rough_center_radius(gray: np.ndarray, min_r: float, max_r: float) -> Circle | None:
+def _rough_center_radius(gray: NDArray, min_r: float, max_r: float) -> Circle | None:
     g = cv2.GaussianBlur(gray, (0, 0), 2.0)
     # Use adaptive + Otsu fallback to handle glare/crescent
     thr = max(10, int(np.mean(g) + 0.3 * np.std(g)))
@@ -220,12 +235,14 @@ def _rough_center_radius(gray: np.ndarray, min_r: float, max_r: float) -> Circle
         return None
     c = max(cnts, key=cv2.contourArea)
     (cx, cy), r = cv2.minEnclosingCircle(c)
-    if r < min_r * 0.6 or r > max_r * 1.6:
-        return None
-    return Circle(cx, cy, r)
+    if min_r * 0.6 <= r <= max_r * 1.6:
+        return Circle(cx, cy, r)
+    return None
 
 
-def _ring_mask(h, w, circle: Circle, inner=0.70, outer=1.15) -> NDArray[np.uint8]:
+def ring_mask(
+    h: int, w: int, circle: Circle, inner=0.70, outer=1.15
+) -> NDArray[np.uint8]:
     Y, X = np.ogrid[:h, :w]
     dist = np.sqrt((X - circle.x) ** 2 + (Y - circle.y) ** 2)
     m = ((dist >= circle.radius * inner) & (dist <= circle.radius * outer)).astype(
@@ -281,7 +298,7 @@ build_analysis_mask_ui = build_analysis_mask
 # ============== 主检测（供 pipeline 调用） ==============
 
 
-def _touches_border(circle: Circle, size: Vector[int], margin: int = 5) -> bool:
+def touches_border(circle: Circle, size: Vector[int], margin: int = 5) -> bool:
     if circle is None:
         return True
 
@@ -296,7 +313,7 @@ def _touches_border(circle: Circle, size: Vector[int], margin: int = 5) -> bool:
 # ------------------ 检测环境设置 ------------------
 def _setup_detection_environment(
     image: NDArray, strong_denoise: bool = False
-) -> tuple[NDArray, NDArray, NDArray, str, float, float]:
+) -> tuple[NDArray, NDArray, NDArray, BrightnessMode, int, int]:
     """
     设置检测环境，包括预处理和降噪
 
@@ -307,9 +324,8 @@ def _setup_detection_environment(
     Returns:
         tuple: (processed, processed_det, proc_for_hough, brightness_mode, H, W)
     """
-    t0 = time.time()
-    TIME_BUDGET = 6.0  # seconds per frame guard for extreme cases
-    processed, brightness_mode = adaptive_preprocessing(image, "auto")
+
+    processed, brightness_mode = adaptive_preprocessing(image, BrightnessMode.AUTO)
 
     # 可选：强力降噪（仅影响检测，不影响最终成片）
     if strong_denoise:
@@ -339,9 +355,7 @@ def _build_detection_roi(
     prev_circle: Circle | None,
     H: int,
     W: int,
-    t0: float,
-    TIME_BUDGET: float,
-) -> tuple[NDArray, Circle | None, float, float]:
+) -> tuple[NDArray, list[Circle]]:
     """
     构建检测ROI，包括粗估中心和历史先验
 
@@ -351,14 +365,11 @@ def _build_detection_roi(
         hough: 霍夫变换参数
         prev_circle: 上一帧的圆
         H, W: 图像尺寸
-        t0: 开始时间
-        TIME_BUDGET: 时间预算
 
     Returns:
-        tuple: (proc_for_hough, best_circle, best_score, scale)
+        tuple: (proc_for_hough, best_circle, scale)
     """
-    best_circle: Circle | None = None
-    best_score: float = 0
+
     scale = 1.0
 
     # —— 粗估中心半径，构建环形 ROI —— #
@@ -366,69 +377,59 @@ def _build_detection_roi(
         processed_det, hough.minRadius, hough.maxRadius
     )
     if est is not None:
-        ring = _ring_mask(H, W, est, inner=0.70, outer=1.15)
+        ring = ring_mask(H, W, est, inner=0.70, outer=1.15)
         proc_for_hough = cv2.bitwise_and(processed_det, processed_det, mask=ring)
 
     # —— 若给出上一帧圆心半径，合并一个"历史先验"环形 ROI —— #
     if prev_circle:
-        try:
-            inner = max(
-                0.70,
-                min(0.85, (hough.minRadius / max(prev_circle.radius, 1e-6)) * 0.9),
-            )
-            outer = min(
-                1.30,
-                max(1.15, (hough.maxRadius / max(prev_circle.radius, 1e-6)) * 1.05),
-            )
-            ring_prev = _ring_mask(H, W, prev_circle, inner=inner, outer=outer)
-            proc_for_hough = cv2.bitwise_and(
-                proc_for_hough, proc_for_hough, mask=ring_prev
-            )
-        except Exception:
-            pass
-    else:
-        max_side = max(H, W)
-        if max_side > 1800:
-            scale = 1800.0 / max_side
-            small = cv2.resize(
-                processed_det,
-                (int(W * scale), int(H * scale)),
-                interpolation=cv2.INTER_AREA,
-            )
-            new_hough = Hough(
-                minRadius=max(1, int(hough.minRadius * scale)),
-                maxRadius=max(2, int(hough.maxRadius * scale)),
-                param1=hough.param1,
-                param2=max(hough.param2 - 5, 10),
-            )
 
-            try:
-                sc = cv2.HoughCircles(
-                    small,
-                    cv2.HOUGH_GRADIENT,
-                    dp=1.2,
-                    minDist=small.shape[0] // 2,
-                    **new_hough._asdict(),
-                )
-                if sc is not None:
-                    circle = sc[0][0]
-                    circle = Circle(
-                        circle[0] / scale, circle[1] / scale, circle[2] / scale
-                    )
-                    quality = evaluate_circle_quality(processed_det, circle) * 1.02
-                    if quality > best_score:
-                        best_score, best_circle = quality, circle
-                        logging.info("缩放霍夫(thumb)")
-            except Exception:
-                pass
+        inner = max(
+            0.70,
+            min(0.85, (hough.minRadius / max(prev_circle.radius, 1e-6)) * 0.9),
+        )
+        outer = min(
+            1.30,
+            max(1.15, (hough.maxRadius / max(prev_circle.radius, 1e-6)) * 1.05),
+        )
+        ring_prev = ring_mask(H, W, prev_circle, inner=inner, outer=outer)
+        proc_for_hough = cv2.bitwise_and(proc_for_hough, proc_for_hough, mask=ring_prev)
+        return proc_for_hough, [prev_circle]
 
-    return proc_for_hough, best_circle, best_score, scale
+    max_side = max(H, W)
+    circles = []
+    if max_side > 1800:
+        scale = 1800.0 / max_side
+        small = cv2.resize(
+            processed_det,
+            (int(W * scale), int(H * scale)),
+            interpolation=cv2.INTER_AREA,
+        )
+        new_hough = Hough(
+            minRadius=max(1, int(hough.minRadius * scale)),
+            maxRadius=max(2, int(hough.maxRadius * scale)),
+            param1=hough.param1,
+            param2=max(hough.param2 - 5, 10),
+        )
+
+        sc = cv2.HoughCircles(
+            small,
+            cv2.HOUGH_GRADIENT,
+            dp=1.2,
+            minDist=small.shape[0] // 2,
+            **new_hough._asdict(),
+        )
+        if sc is None:
+            return proc_for_hough, []
+        circles = [Circle.from_ndarray(c / scale) for c in sc[0]]
+        logging.info("缩放霍夫(thumb)")
+
+    return proc_for_hough, circles
 
 
 # ------------------ 超时检测函数 ------------------
-def _timeout_fallback_detection(
-    processed_det: NDArray, processed: NDArray, hough: Hough, H: int, W: int
-) -> tuple[Circle | None, float]:
+def timeout_fallback_detection(
+    processed_det: NDArray, hough: Hough, H: int, W: int
+) -> list[Circle]:
     """
     超时时的降级检测
 
@@ -441,8 +442,6 @@ def _timeout_fallback_detection(
     Returns:
         tuple: (best_circle, best_score)
     """
-    best_circle: Circle | None = None
-    best_score: float = 0
 
     scale = min(1.0, 1600.0 / max(H, W))
     small = cv2.resize(
@@ -463,20 +462,19 @@ def _timeout_fallback_detection(
         minDist=small.shape[0] // 2,
         **new_hough._asdict(),
     )
-    if sc is not None:
-        circle = sc[0][0]
-        best_circle = Circle(circle[0] / scale, circle[1] / scale, circle[2] / scale)
-        best_score = evaluate_circle_quality(processed, best_circle) * 0.9
-        logging.info("超时降级(thumb)")
+    if sc is None:
+        return []
+    circles = [Circle.from_ndarray(c) for c in sc[0]]
 
-    return best_circle, best_score
+    logging.info("超时降级(thumb)")
+
+    return circles
 
 
 # ------------------ 稳健RANSAC检测 ------------------
 def robust_ransac_detection(
     processed_det: NDArray,
-    processed: NDArray,
-) -> tuple[Circle, float] | None:
+) -> list[Circle]:
     """
     尝试稳健外缘RANSAC检测
 
@@ -493,20 +491,16 @@ def robust_ransac_detection(
 
     robust = detect_circle_robust(processed_det, None)
     if robust is None:
-        raise Exception("RANSAC detection failed")
+        return []
     logging.info("稳健外缘RANSAC")
-    quality = evaluate_circle_quality(processed, robust) * 1.05
-    # if quality > best_score:
-    #     best_score = quality
-    #     best_circle = robust
 
-    return robust, quality
+    return [robust]
 
 
 # ------------------ 标准霍夫检测 ------------------
 def standard_hough_detection(
-    proc_for_hough: NDArray, processed: NDArray, hough: Hough, height: int
-) -> tuple[Circle, float]:
+    proc_for_hough: NDArray, hough: Hough, height: int
+) -> list[Circle]:
     """
     尝试标准霍夫检测
 
@@ -531,25 +525,20 @@ def standard_hough_detection(
         **hough._asdict(),
     )
     if circles is None:
-        raise Exception("Standard Hough detection failed")
+        return []
     logging.info("标准霍夫")
-    circles = [
-        (Circle(*c), evaluate_circle_quality(processed, circle))
-        for c in circles[0]
-        if (circle := Circle(*c))
-    ]
+    circles = [Circle(*c) for c in circles[0]]
 
-    return max(circles, key=lambda x: x[1])
+    return circles
 
 
 # ------------------ 自适应霍夫检测 ------------------
 def adaptive_hough_detection(
     proc_for_hough: NDArray,
-    processed: NDArray,
     hough: Hough,
-    brightness_mode: str,
+    brightness_mode: BrightnessMode,
     height: int,
-) -> tuple[Circle, float]:
+) -> list[Circle]:
     """
     尝试自适应霍夫检测，根据亮度模式调整参数
 
@@ -565,14 +554,14 @@ def adaptive_hough_detection(
         tuple: (best_circle, best_score)
     """
 
-    if brightness_mode == "bright":
+    if brightness_mode == BrightnessMode.BRIGHT:
         new_hough = Hough(
             minRadius=hough.minRadius,
             maxRadius=hough.maxRadius,
             param1=hough.param1 + 20,
             param2=max(hough.param2 - 5, 10),
         )
-    elif brightness_mode == "dark":
+    elif brightness_mode == BrightnessMode.DARK:
         new_hough = Hough(
             minRadius=hough.minRadius,
             maxRadius=hough.maxRadius,
@@ -587,30 +576,24 @@ def adaptive_hough_detection(
             param2=max(hough.param2 - 8, 8),
         )
 
-    circles2 = cv2.HoughCircles(
+    circles = cv2.HoughCircles(
         proc_for_hough,
         cv2.HOUGH_GRADIENT,
         dp=1.2,
         minDist=height // 2,
         **new_hough._asdict(),
     )
-    if circles2 is None:
-        raise Exception("Adaptive Hough detection failed")
-    circles = [
-        (circle, evaluate_circle_quality(processed, circle))
-        for c in circles2[0]
-        if (circle := Circle(*c))
-    ]
+    if circles is None:
+        return []
+    circles = [Circle(*c) for c in circles[0]]
 
     logging.info(f"自适应霍夫(P1={new_hough.param1},P2={new_hough.param2})")
 
-    return max(circles, key=lambda x: x[1])
+    return circles
 
 
 # ------------------ 轮廓检测 ------------------
-def _try_contour_detection(
-    processed_det: NDArray, processed: NDArray, hough: Hough, best_score: float
-) -> tuple[Circle | None, float]:
+def contour_detection(processed_det: NDArray, hough: Hough) -> list[Circle]:
     """
     尝试轮廓检测作为备选方案
 
@@ -623,54 +606,38 @@ def _try_contour_detection(
     Returns:
         tuple: (best_circle, best_score)
     """
-    best_circle: Circle | None = None
 
-    try:
-        mean_val = float(np.mean(processed_det))
-        tv = max(50, int(mean_val * 0.7))
-        _, binary = cv2.threshold(processed_det, tv, 255, cv2.THRESH_BINARY)
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-        contours, _ = cv2.findContours(
-            binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if (
-                hough.minRadius**2 * np.pi * 0.3
-                <= area
-                <= hough.maxRadius**2 * np.pi * 2.0
-            ):
-                (cx, cy), r = cv2.minEnclosingCircle(cnt)
-                if hough.minRadius <= r <= hough.maxRadius:
-                    circle = Circle(cx, cy, r)
-                    quality = evaluate_circle_quality(processed, circle) * 0.7
-                    if quality > best_score:
-                        best_score, best_circle = quality, circle
-                        logging.info(f"轮廓检测(T={tv})")
-    except Exception:
-        pass
+    mean_val = float(np.mean(processed_det))
+    tv = max(50, int(mean_val * 0.7))
+    _, binary = cv2.threshold(processed_det, tv, 255, cv2.THRESH_BINARY)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    min_area = hough.minRadius**2 * np.pi * 0.3
+    max_area = hough.maxRadius**2 * np.pi * 2.0
+    contours = [cnt for cnt in contours if min_area <= cv2.contourArea(cnt) <= max_area]
+    circles = [
+        Circle(c[0][0], c[0][1], c[1])
+        for cnt in contours
+        if (c := cv2.minEnclosingCircle(cnt))
+    ]
+    circles = [c for c in circles if hough.minRadius <= c.radius <= hough.maxRadius]
+    logging.info(f"轮廓检测(T={tv})")
 
-    return best_circle, best_score
+    return circles
 
 
 # ------------------ Padding 降级检测 ------------------
-def padding_fallback(
+def padding_fallback_detection(
     processed_det: NDArray,
-    _processed: NDArray,
     hough: Hough,
-    best_score: float,
-    H: int,
-    W: int,
-) -> tuple[Circle, float]:
+) -> list[Circle]:
     """
     尝试基于 padding 的降级检测，用于处理边界情况
 
     Args:
         processed_det: 检测优化图像
-        processed: 处理后的图像
         hough: 霍夫参数
-        best_score: 当前最佳分数
         H, W: 图像尺寸
 
     Returns:
@@ -692,7 +659,7 @@ def padding_fallback(
         processed_pad, int(hough.minRadius * 1.1), int(hough.maxRadius * 1.1)
     )
     if est_p is not None:
-        ring_p = _ring_mask(
+        ring_p = ring_mask(
             processed_pad.shape[0],
             processed_pad.shape[1],
             est_p,
@@ -723,35 +690,16 @@ def padding_fallback(
         else:
             circles = []
     else:
-        circles = [Circle(*c) for c in circles_p[0]]
-    for cp in circles:
-        # Build a matching padded version of the original processed (for scoring)
-        scored_pad = processed_pad  # using detection pad for speed; acceptable because only ranking
-        q_pad = evaluate_circle_quality(scored_pad, cp)
+        circles = [Circle.from_ndarray(c) for c in circles_p[0]]
 
-        hh, ww = processed_pad.shape[:2]
-        yy, xx = np.ogrid[:hh, :ww]
-        mask = (xx - cp.x) ** 2 + (yy - cp.y) ** 2 <= cp.radius**2
-        # 对应原图区域
-        crop = mask[pad : pad + H, pad : pad + W]
-        visible_ratio = float(np.count_nonzero(crop)) / (np.pi * cp.radius**2 + 1e-6)
-        q_adj = max(10.0, float(q_pad) * np.sqrt(max(0.05, min(1.0, visible_ratio))))
-        if q_adj > best_score:
-            # 映射回原图坐标
-            best_circle = Circle(cp.x - pad, cp.y - pad, cp.radius)
-            best_score = q_adj
-
-    return best_circle, best_score
+    return circles
 
 
 # ------------------ 最终圆验证 ------------------
-def _validate_final_circle(
-    best_circle: Circle | None,
-    best_score: float,
+def validate_final_circle(
     processed_det: NDArray,
-    processed: NDArray,
     hough: Hough,
-) -> tuple[Circle | None, float]:
+) -> list[Circle]:
     """
     最终半径窗口一致性检查，严格遵守UI设定
 
@@ -765,37 +713,29 @@ def _validate_final_circle(
     Returns:
         tuple: (best_circle, best_score)
     """
-    if best_circle and not (hough.minRadius <= best_circle.radius <= hough.maxRadius):
-        # 在严格窗口内再做一次快速霍夫重试
-        height, width = processed_det.shape
-        _minDist_coreS = max(16, min(height, width) // 4)
-        new_hough = Hough(
-            minRadius=max(1, hough.minRadius),
-            maxRadius=hough.maxRadius,
-            param1=max(hough.param1, 20),
-            param2=max(hough.param2 - 5, 8),
-        )
-        scS = cv2.HoughCircles(
-            processed_det,
-            cv2.HOUGH_GRADIENT,
-            dp=1.2,
-            minDist=_minDist_coreS,
-            **new_hough._asdict(),
-        )
-        if scS is not None:
-            bestS = None
-            bestQuality = -1.0
-            for circle in scS[0]:
-                if hough.minRadius <= float(circle[2]) <= hough.maxRadius:
-                    quality = float(evaluate_circle_quality(processed, circle))
-                    if quality > bestQuality:
-                        bestQuality = quality
-                        bestS = circle
-            if bestS is not None:
-                best_circle = Circle(bestS[0], bestS[1], bestS[2])
-                best_score = bestQuality
 
-    return best_circle, best_score
+    # 在严格窗口内再做一次快速霍夫重试
+    height, width = processed_det.shape
+    _minDist_coreS = max(16, min(height, width) // 4)
+    new_hough = Hough(
+        minRadius=max(1, hough.minRadius),
+        maxRadius=hough.maxRadius,
+        param1=max(hough.param1, 20),
+        param2=max(hough.param2 - 5, 8),
+    )
+    scS = cv2.HoughCircles(
+        processed_det,
+        cv2.HOUGH_GRADIENT,
+        dp=1.2,
+        minDist=_minDist_coreS,
+        **new_hough._asdict(),
+    )
+    if scS is None:
+        return []
+    circles = [Circle.from_ndarray(c) for c in scS[0]]
+    circles = [c for c in circles if hough.minRadius <= c.radius <= hough.maxRadius]
+
+    return circles
 
 
 def detect_circle_phd2_enhanced(
@@ -803,86 +743,79 @@ def detect_circle_phd2_enhanced(
     hough: Hough,
     strong_denoise=False,
     prev_circle: Circle | None = None,
-) -> tuple[Circle, NDArray, float]:
+) -> tuple[Circle | None, float]:
     """
     主检测函数 - 重构后的协调器版本
 
     将原本的单体大函数拆分为多个职责明确的辅助函数
     """
-    t0 = time.time()
-    TIME_BUDGET = 6.0  # seconds per frame guard for extreme cases
+
+    best_circle: Circle | None = None
+    best_score: float = 0.0
 
     # 1. 设置检测环境
     processed, processed_det, proc_for_hough, brightness_mode, H, W = (
         _setup_detection_environment(image, strong_denoise)
     )
 
+    def update_best(circles: list[Circle]) -> None:
+        nonlocal best_circle, best_score, processed
+        for c in circles:
+            score = evaluate_circle_quality(processed, c)
+            if score > best_score:
+                best_circle = c
+                best_score = score
+
     # 2. 构建检测ROI
-    proc_for_hough, best_circle, best_score, _ = _build_detection_roi(
+    proc_for_hough, circles = _build_detection_roi(
         proc_for_hough,
         processed_det,
         hough,
         prev_circle,
-        int(H),
-        int(W),
-        t0,
-        TIME_BUDGET,
+        H,
+        W,
     )
-
+    update_best(circles)
     # 3. 尝试稳健RANSAC检测
-    best_circle, best_score = robust_ransac_detection(
-        processed_det, processed, best_score
-    )
+    update_best(robust_ransac_detection(processed_det))
 
-    # 4. 再次超时检查
-    if time.time() - t0 > TIME_BUDGET:
-        best_circle, best_score = _timeout_fallback_detection(
-            processed_det, processed, hough, int(H), int(W)
-        )
-        if best_circle is not None:
-            return best_circle, processed, best_score
+    # # 4. 再次超时检查
+    # if time.time() - t0 > TIME_BUDGET:
+    #     best_circle, best_score = timeout_fallback_detection(
+    #         processed_det, processed, hough, int(H), int(W)
+    #     )
+    #     if best_circle is not None:
+    #         return best_circle, processed, best_score
 
     # 5. 尝试标准霍夫检测
-    best_circle, best_score = standard_hough_detection(
-        proc_for_hough, processed, hough, best_score, int(H)
-    )
+    update_best(standard_hough_detection(proc_for_hough, hough, H))
 
     # 6. 尝试自适应霍夫检测
     if best_score < 15:
-        best_circle, best_score = adaptive_hough_detection(
-            proc_for_hough, processed, hough, brightness_mode, best_score, int(H)
-        )
+        update_best(adaptive_hough_detection(proc_for_hough, hough, brightness_mode, H))
 
     # —— 轮廓备选 —— #
     if best_score < 10:
-        best_circle, best_score = _try_contour_detection(
-            processed_det, processed, hough, best_score
-        )
+        update_best(contour_detection(processed_det, hough))
 
     # —— padding-based fallback —— #
-    if time.time() - t0 > TIME_BUDGET:
-        # 超时降级检测
-        best_circle, best_score = _timeout_fallback_detection(
-            processed_det, processed, hough, int(H), int(W)
-        )
-        if best_circle is not None:
-            return best_circle, processed, best_score
+    # if time.time() - t0 > TIME_BUDGET:
+    #     # 超时降级检测
+    #     best_circle, best_score = timeout_fallback_detection(
+    #         processed_det, processed, hough, int(H), int(W)
+    #     )
+    #     if best_circle is not None:
+    #         return best_circle, processed, best_score
 
-    need_pad: bool = (
-        (best_circle is None)
+    if (
+        not best_circle
         or (best_score < 10)
-        or _touches_border(best_circle, Vector(int(W), int(H)), 5)
-    )
-    if need_pad:
-        best_circle, best_score = padding_fallback(
-            processed_det, processed, hough, best_score, int(H), int(W)
-        )
+        or touches_border(best_circle, Vector(W, H))
+    ):
+        update_best(padding_fallback_detection(processed_det, hough))
 
-    # —— 最终半径窗口一致性检查（严格遵守 UI 设定） —— #
-    best_circle, best_score = _validate_final_circle(
-        best_circle, best_score, processed_det, processed, hough
-    )
+    if best_circle and not (hough.minRadius <= best_circle.radius <= hough.maxRadius):
+        # —— 最终半径窗口一致性检查（严格遵守 UI 设定） —— #
+        update_best(validate_final_circle(processed_det, hough))
 
-    if not best_circle:
-        raise Exception("No circle detected")
-    return best_circle, processed, best_score
+    return best_circle, best_score

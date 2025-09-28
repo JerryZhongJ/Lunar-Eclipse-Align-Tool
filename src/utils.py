@@ -10,7 +10,6 @@ from PIL import Image
 
 import piexif
 
-import tkinter as tk
 from numpy.typing import NDArray
 
 # ----------------- 系统/常量 -----------------
@@ -111,63 +110,51 @@ def imwrite_with_exif(src_path: Path, dst_path: Path, img_bgr: np.ndarray) -> bo
         img_bgr:  OpenCV(BGR) 图像
     返回: bool 是否写出成功
     """
-    try:
-        dst_path.parent.mkdir(parents=True, exist_ok=True)
 
-        ext = dst_path.suffix.lower() or ".tiff"
-        # 仅在 JPEG/TIFF 尝试保EXIF，其余格式走原逻辑
-        if ext not in (".jpg", ".jpeg", ".tif", ".tiff"):
-            return imwrite_unicode(dst_path, img_bgr)
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Pillow 不可用则直接回退
-        if Image is None:
-            return imwrite_unicode(dst_path, img_bgr)
-
-        # BGR -> RGB
-        try:
-            rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        except Exception:
-            # 如果颜色转换失败，仍尝试直接构建
-            rgb = img_bgr
-        im = Image.fromarray(rgb)
-
-        exif_bytes = None
-        icc = None
-        # 读取源图的 EXIF 与 ICC
-        try:
-            with Image.open(src_path) as src_im:
-                exif_bytes = src_im.info.get("exif", None)
-                icc = src_im.info.get("icc_profile", None)
-                # 将 Orientation 归一到 1，避免查看器再次旋转
-                if exif_bytes and piexif is not None:
-                    try:
-                        exif_dict = piexif.load(exif_bytes)
-                        exif_dict["0th"][piexif.ImageIFD.Orientation] = 1
-                        exif_bytes = piexif.dump(exif_dict)
-                    except Exception:
-                        # EXIF 解析失败则保持原样
-                        pass
-        except Exception:
-            pass
-
-        save_kwargs = {}
-        if exif_bytes is not None:
-            save_kwargs["exif"] = exif_bytes
-        if icc is not None:
-            save_kwargs["icc_profile"] = icc
-
-        if ext in (".jpg", ".jpeg"):
-            # 设一个较高质量，保持文件体积与质量平衡
-            save_kwargs.setdefault("quality", 95)
-            im.save(dst_path, **save_kwargs)
-        else:  # TIFF
-            # 无损/轻压缩
-            save_kwargs.setdefault("compression", "tiff_deflate")
-            im.save(dst_path, **save_kwargs)
-        return True
-    except Exception:
-        # 任意异常回退
+    ext = dst_path.suffix.lower() or ".tiff"
+    # 仅在 JPEG/TIFF 尝试保EXIF，其余格式走原逻辑
+    if ext not in (".jpg", ".jpeg", ".tif", ".tiff"):
         return imwrite_unicode(dst_path, img_bgr)
+
+    # BGR -> RGB
+    try:
+        rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    except Exception:
+        # 如果颜色转换失败，仍尝试直接构建
+        rgb = img_bgr
+    im = Image.fromarray(rgb)
+
+    exif_bytes = None
+    icc = None
+    # 读取源图的 EXIF 与 ICC
+
+    with Image.open(src_path) as src_im:
+        exif_bytes = src_im.info.get("exif", None)
+        icc = src_im.info.get("icc_profile", None)
+        # 将 Orientation 归一到 1，避免查看器再次旋转
+        if exif_bytes:
+
+            exif_dict = piexif.load(exif_bytes)
+            exif_dict["0th"][piexif.ImageIFD.Orientation] = 1
+            exif_bytes = piexif.dump(exif_dict)
+
+    save_kwargs = {}
+    if exif_bytes is not None:
+        save_kwargs["exif"] = exif_bytes
+    if icc is not None:
+        save_kwargs["icc_profile"] = icc
+
+    if ext in (".jpg", ".jpeg"):
+        # 设一个较高质量，保持文件体积与质量平衡
+        save_kwargs.setdefault("quality", 95)
+        im.save(dst_path, **save_kwargs)
+    else:  # TIFF
+        # 无损/轻压缩
+        save_kwargs.setdefault("compression", "tiff_deflate")
+        im.save(dst_path, **save_kwargs)
+    return True
 
 
 def to_display_rgb(img: np.ndarray) -> np.ndarray:
@@ -336,11 +323,22 @@ class VectorArray:
             )
         raise TypeError("Unsupported type for multiplication")
 
-    def __add__(self, other: "VectorArray | Vector[float]") -> "VectorArray":
+    @overload
+    def __add__(self, other: "VectorArray | Vector[float]") -> "VectorArray": ...
+    @overload
+    def __add__(self, other: "PositionArray | Position[float]") -> "PositionArray": ...
+    def __add__(
+        self, other: "VectorArray | Vector[float] | PositionArray | Position[float]"
+    ) -> "VectorArray | PositionArray":
         if isinstance(other, Vector):
             return VectorArray(self._arr + np.array([[other.x, other.y]]), safe=False)
-        else:
+        elif isinstance(other, VectorArray):
             return VectorArray(self._arr + other._arr, safe=False)
+        elif isinstance(other, Position):
+            return PositionArray(self._arr + np.array([[other.x, other.y]]), safe=False)
+        elif isinstance(other, PositionArray):
+            return PositionArray(self._arr + other._arr, safe=False)
+        raise TypeError("Unsupported type for addition")
 
     def __sub__(self, other: "VectorArray | Vector[float]") -> "VectorArray":
         if isinstance(other, Vector):
@@ -373,6 +371,11 @@ class VectorArray:
 @dataclass(frozen=True)
 class Circle(Position[float]):
     radius: float
+
+    @staticmethod
+    def from_ndarray(arr: NDArray) -> "Circle":
+        assert arr.ndim == 1 and arr.shape[0] == 3
+        return Circle(float(arr[0]), float(arr[1]), float(arr[2]))
 
     def shift(self, delta: "Vector[float]") -> "Circle":
         return Circle(self.x + delta.x, self.y + delta.y, self.radius)

@@ -4,54 +4,79 @@
 UI界面模块
 """
 import os
-
-
+from pathlib import Path
 
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QLabel, QLineEdit, QPushButton, QSpinBox, QSlider, QCheckBox,
-    QTextBrowser, QFileDialog, QMessageBox,
-   QComboBox, QGroupBox
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QGridLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSpinBox,
+    QSlider,
+    QCheckBox,
+    QTextBrowser,
+    QFileDialog,
+    QMessageBox,
+    QComboBox,
+    QGroupBox,
 )
 from PySide6.QtCore import (
-    Qt,Signal, QThread, QObject,
+    Qt,
+    Signal,
+    QThread,
+    QObject,
 )
 
 
 # 导入工具函数
 from utils import (
-     SYSTEM, DEFAULT_DEBUG_MODE, SUPPORTED_EXTS, normalize_path, safe_join,
+    SYSTEM,
+    DEFAULT_DEBUG_MODE,
+    SUPPORTED_EXTS,
+    Hough,
 )
 
 # 导入算法模块
 from pipeline import align_moon_images_incremental
 
-try:
-    from scipy.fft import fft2
-    SCIPY_AVAILABLE = True
-except Exception:
-    SCIPY_AVAILABLE = False
+
+from scipy.fft import fft2
+
+from version import VERSION
+
 
 # 定义信号用于线程间通信
 class ProgressSignal(QObject):
     """进度信号类"""
+
     progress_updated = Signal(int, str)  # 进度百分比，状态文本
+
 
 class AlignmentThread(QThread):
     """对齐处理线程"""
+
     progress_signal = Signal(int, str)
     finished = Signal(bool, str)  # 是否成功，消息
 
-    def __init__(self, in_path, out_path, hough_params, log_browser, debug_mode,
-                 debug_basename, ref_path, use_advanced, method, strong_denoise):
+    def __init__(
+        self,
+        in_path: Path,
+        out_path: Path,
+        hough: Hough,
+        ref_path: Path | None,
+        use_advanced,
+        method,
+        strong_denoise,
+    ):
         super().__init__()
         self.in_path = in_path
         self.out_path = out_path
-        self.hough_params = hough_params
-        self.log_browser = log_browser
-        self.debug_mode = debug_mode
-        self.debug_basename = debug_basename
+        self.hough = hough
         self.ref_path = ref_path
         self.use_advanced = use_advanced
         self.method = method
@@ -66,14 +91,19 @@ class AlignmentThread(QThread):
 
             # 执行对齐处理
             result = align_moon_images_incremental(
-                self.in_path, self.out_path, self.hough_params,
-                self.log_browser, self.debug_mode, self.debug_basename,
-                self.finished, progress_callback, self.ref_path,
-                self.use_advanced, self.method, self.strong_denoise
+                self.in_path,
+                self.out_path,
+                self.hough,
+                progress_callback,
+                self.ref_path,
+                self.use_advanced,
+                self.method,
+                self.strong_denoise,
             )
 
         except Exception as e:
             self.finished.emit(False, str(e))
+
 
 class UniversalLunarAlignApp(QMainWindow):
     """月食圆面对齐工具主窗口"""
@@ -108,19 +138,12 @@ class UniversalLunarAlignApp(QMainWindow):
 
     def _init_variables(self):
         """初始化变量"""
-        self.input_path = ""
-        self.output_path = ""
-        self.reference_image_path: str | None = None
-        self.debug_mode = DEFAULT_DEBUG_MODE
-        self.debug_image_path = ""
+        self.input_path: Path | None = None
+        self.output_path: Path | None = None
+        self.reference_path: Path | None = None
 
         # 参数设置
-        self.params = {
-            "min_radius": 300,
-            "max_radius": 800,
-            "param1": 50,
-            "param2": 30
-        }
+        self.params = Hough(minRadius=300, maxRadius=800, param1=50, param2=30)
 
         self.use_advanced_alignment = False
         self.alignment_method = "auto"
@@ -187,7 +210,9 @@ class UniversalLunarAlignApp(QMainWindow):
 
         # 帮助提示和强力降噪选项
         help_layout = QHBoxLayout()
-        help_text = QLabel("💡参考图像：作为对齐基准的图像。请在预览&半径估计窗口选择。")
+        help_text = QLabel(
+            "💡参考图像：作为对齐基准的图像。请在预览&半径估计窗口选择。"
+        )
         help_text.setStyleSheet("color: gray; font-size: 10pt;")
         help_layout.addWidget(help_text)
 
@@ -213,20 +238,22 @@ class UniversalLunarAlignApp(QMainWindow):
         hough_layout = QVBoxLayout(hough_group)
 
         # 帮助文本
-        help_text = QLabel("• PHD2增强算法：三级检测策略，自适应图像亮度\n"
-                          "• 最小/最大半径: 限制检测到的圆的半径范围(像素)\n"
-                          "• 参数1: Canny边缘检测高阈值\n"
-                          "• 参数2: 霍夫累加器阈值（关键参数）")
+        help_text = QLabel(
+            "• PHD2增强算法：三级检测策略，自适应图像亮度\n"
+            "• 最小/最大半径: 限制检测到的圆的半径范围(像素)\n"
+            "• 参数1: Canny边缘检测高阈值\n"
+            "• 参数2: 霍夫累加器阈值（关键参数）"
+        )
         help_text.setStyleSheet("font-size: 9pt;")
         hough_layout.addWidget(help_text)
 
         # 参数控制
         param_widgets = {}
         param_configs = [
-            ("min_radius", "最小半径:", 1, 3000),
-            ("max_radius", "最大半径:", 10, 4000),
+            ("minRadius", "最小半径:", 1, 3000),
+            ("maxRadius", "最大半径:", 10, 4000),
             ("param1", "参数1 (Canny):", 1, 200),
-            ("param2", "参数2 (累加阈值):", 1, 100)
+            ("param2", "参数2 (累加阈值):", 1, 100),
         ]
 
         for i, (key, label, min_val, max_val) in enumerate(param_configs):
@@ -243,22 +270,26 @@ class UniversalLunarAlignApp(QMainWindow):
             slider = QSlider(Qt.Orientation.Horizontal)
             slider.setMinimum(min_val)
             slider.setMaximum(max_val)
-            slider.setValue(self.params[key])
+            slider.setValue(self.params._asdict()[key])
             param_row_layout.addWidget(slider, 2)
 
             # 数值输入框
             spinbox = QSpinBox()
             spinbox.setMinimum(min_val)
             spinbox.setMaximum(max_val)
-            spinbox.setValue(self.params[key])
+            spinbox.setValue(self.params._asdict()[key])
             param_row_layout.addWidget(spinbox, 0)
 
             # 连接信号
-            slider.valueChanged.connect(lambda v, k=key, s=spinbox: self._on_param_changed(k, v, s))
-            spinbox.valueChanged.connect(lambda v, k=key, sl=slider: self._on_param_changed(k, v, sl))
+            slider.valueChanged.connect(
+                lambda v, k=key, s=spinbox: self._on_param_changed(k, v, s)
+            )
+            spinbox.valueChanged.connect(
+                lambda v, k=key, sl=slider: self._on_param_changed(k, v, sl)
+            )
 
             # 保存控件引用
-            param_widgets[key] = {'slider': slider, 'spinbox': spinbox}
+            param_widgets[key] = {"slider": slider, "spinbox": spinbox}
 
             hough_layout.addWidget(param_row)
 
@@ -277,15 +308,19 @@ class UniversalLunarAlignApp(QMainWindow):
         advanced_layout.addWidget(QLabel("算法说明:"))
 
         self.method_combo = QComboBox()
-        self.method_combo.addItems(['auto', 'phase_corr', 'template', 'feature', 'centroid'])
-        self.method_combo.setCurrentText('auto')
+        self.method_combo.addItems(
+            ["auto", "phase_corr", "template", "feature", "centroid"]
+        )
+        self.method_combo.setCurrentText("auto")
         self.method_combo.setEnabled(False)
         advanced_layout.addWidget(self.method_combo)
 
         # 算法帮助
-        algo_help = QLabel("• 在月盘内自动选择多块ROI进行 ZNCC/相位相关微调\n"
-                          "• 对亮度变化与阴影边界更鲁棒，失败时自动回退到圆心对齐\n"
-                          "• 建议在偏食/生光阶段启用，多数情况默认关闭即可")
+        algo_help = QLabel(
+            "• 在月盘内自动选择多块ROI进行 ZNCC/相位相关微调\n"
+            "• 对亮度变化与阴影边界更鲁棒，失败时自动回退到圆心对齐\n"
+            "• 建议在偏食/生光阶段启用，多数情况默认关闭即可"
+        )
         algo_help.setStyleSheet("color: darkgreen; font-size: 8pt;")
         advanced_layout.addWidget(algo_help)
 
@@ -347,22 +382,19 @@ class UniversalLunarAlignApp(QMainWindow):
 
     def _set_initial_log_message(self):
         """设置初始日志信息"""
-        scipy_status = "✓ 已安装" if SCIPY_AVAILABLE else "✗ 未安装"
-        welcome = (f"欢迎使用月食圆面对齐工具 V{VERSION} - 集成版 By @正七价的氟离子\n"
-                   f"运行平台: {SYSTEM}\n"
-                   f"SciPy状态: {scipy_status}\n"
-                   "================================================================\n\n"
-                   "算法说明：\n"
-                   "• PHD2增强算法：基于霍夫圆检测，适用于完整清晰的月球\n"
-                   "• 多ROI精配准：适用于偏食、生光等复杂阶段（实验性）\n"
-                   "• 回退机制：确保在任何情况下都有可用的对齐方案\n\n"
-                   "使用建议：\n"
-                   "• 使用预览工具准确估算半径范围\n"
-                   "• 参数2（累加器阈值）是最关键的调整参数\n"
-                   f"• 支持格式：{', '.join(SUPPORTED_EXTS)}\n")
-        if not SCIPY_AVAILABLE:
-            welcome += ("\n⚠️ 注意: SciPy未安装，相位相关算法将被禁用\n"
-                        "可通过 pip install scipy 安装以启用多ROI中的相位相关增强\n")
+        welcome = (
+            f"欢迎使用月食圆面对齐工具 V{VERSION} - 集成版 By @正七价的氟离子\n"
+            f"运行平台: {SYSTEM}\n"
+            "================================================================\n\n"
+            "算法说明：\n"
+            "• PHD2增强算法：基于霍夫圆检测，适用于完整清晰的月球\n"
+            "• 多ROI精配准：适用于偏食、生光等复杂阶段（实验性）\n"
+            "• 回退机制：确保在任何情况下都有可用的对齐方案\n\n"
+            "使用建议：\n"
+            "• 使用预览工具准确估算半径范围\n"
+            "• 参数2（累加器阈值）是最关键的调整参数\n"
+            f"• 支持格式：{', '.join(SUPPORTED_EXTS)}\n"
+        )
 
         self.log_browser.append(welcome)
 
@@ -384,50 +416,49 @@ class UniversalLunarAlignApp(QMainWindow):
         """选择输入文件夹"""
         folder = QFileDialog.getExistingDirectory(self, "选择输入文件夹")
         if folder:
-            self.input_path = normalize_path(folder)
-            self.input_edit.setText(self.input_path)
+            self.input_path = Path(folder)
+            self.input_edit.setText(str(self.input_path))
             # 自动设置输出文件夹
-            parent_dir = os.path.dirname(self.input_path)
-            name = os.path.basename(self.input_path)
-            output_dir = safe_join(parent_dir, f"{name}_aligned_v12b")
+
+            name = self.input_path.name
+            output_dir = self.input_path.parent / f"{name}_aligned_v12b"
             self.output_path = output_dir
-            self.output_edit.setText(self.output_path)
+            self.output_edit.setText(str(self.output_path))
 
     def select_output_folder(self):
         """选择输出文件夹"""
         folder = QFileDialog.getExistingDirectory(self, "选择输出文件夹")
         if folder:
-            self.output_path = normalize_path(folder)
-            self.output_edit.setText(self.output_path)
+            self.output_path = Path(folder)
+            self.output_edit.setText(self.output_path.name)
 
     def select_reference_image(self):
         """选择参考图像"""
-        initial_dir = self.input_path if os.path.isdir(self.input_path) else ""
+        initial_dir = self.input_path if self.input_path.is_dir() else Path()
         file_filter = f"支持的图像 ( {' '.join(SUPPORTED_EXTS)} );;所有文件 (*.*)"
 
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择参考图像（用作对齐基准）",
-            initial_dir, file_filter
+            self, "选择参考图像（用作对齐基准）", str(initial_dir), file_filter
         )
 
-        if file_path:
-            file_path = normalize_path(file_path)
-            # 检查是否在输入文件夹内
-            if self.input_path and not file_path.startswith(self.input_path):
-                reply = QMessageBox.question(
-                    self, "确认",
-                    "选择的参考图像不在输入文件夹内。\n建议选择输入文件夹中的图像作为参考。\n是否继续使用此图像？",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                )
-                if reply == QMessageBox.StandardButton.No:
-                    return
+        file_path = Path(file_path)
+        # 检查是否在输入文件夹内
+        if self.input_path and not file_path.is_relative_to(self.input_path):
+            reply = QMessageBox.question(
+                self,
+                "确认",
+                "选择的参考图像不在输入文件夹内。\n建议选择输入文件夹中的图像作为参考。\n是否继续使用此图像？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.No:
+                return
 
-            self.reference_image_path = file_path
-            self.reference_edit.setText(file_path)
+        self.reference_path = file_path
+        self.reference_edit.setText(file_path.name)
 
     def clear_reference_image(self):
         """清除参考图像"""
-        self.reference_image_path = ""
+        self.reference_path = None
         self.reference_edit.setText("")
 
     def open_preview(self):
@@ -445,9 +476,19 @@ class UniversalLunarAlignApp(QMainWindow):
         self.debug_window.show()
         self.debug_window.raise_()
         self.debug_window.activateWindow()
+
     def _warning_dialog(self, title, message):
         """显示警告对话框"""
-        return QMessageBox.warning(self, title, message, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
+        return (
+            QMessageBox.warning(
+                self,
+                title,
+                message,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            == QMessageBox.StandardButton.Yes
+        )
+
     def start_alignment(self):
         """开始对齐处理"""
         # 验证输入
@@ -462,47 +503,38 @@ class UniversalLunarAlignApp(QMainWindow):
         # 检查SciPy依赖
         use_advanced = self.advanced_check.isChecked()
         method = self.method_combo.currentText()
-        if (use_advanced and 
-            not SCIPY_AVAILABLE and
-            method in ['auto', 'phase_corr'] and
-            not self._warning_dialog("警告", "SciPy未安装，相位相关算法将被禁用。\n多ROI精配准的相位相关增强可能受限。\n\n是否继续？")):
-            return
-        
 
         # 检查参考图像
-        ref_path = self.reference_image_path
-        if (ref_path and not os.path.exists(ref_path)):
-            if not self._warning_dialog("警告", f"指定的参考图像不存在：\n{ref_path}\n\n是否继续（将自动选择参考图像）？"):
+        ref_path = self.reference_path
+        if ref_path and not os.path.exists(ref_path):
+            if not self._warning_dialog(
+                "警告",
+                f"指定的参考图像不存在：\n{ref_path}\n\n是否继续（将自动选择参考图像）？",
+            ):
                 return
             else:
                 ref_path = None
 
-        # 准备调试参数
-        debug_mode = self.debug_mode
-        debug_basename = os.path.basename(self.debug_image_path) if self.debug_image_path else ""
-        if debug_mode and not debug_basename and not self._warning_dialog("提示", "已开启调试模式，但未指定调试样张。\n处理将继续，但不会生成调试图像。\n是否继续？"):
-                return
-
         # 准备霍夫参数
-        hough_params = (
-            self.params["min_radius"],
-            self.params["max_radius"],
-            self.params["param1"],
-            self.params["param2"]
-        )
 
         # 更新UI状态
         self.start_btn.setEnabled(False)
-        self.start_btn.setText("集成对齐中 (多ROI + PHD2)..." if use_advanced else "PHD2对齐中...")
+        self.start_btn.setText(
+            "集成对齐中 (多ROI + PHD2)..." if use_advanced else "PHD2对齐中..."
+        )
 
         # 显示进度窗口
         pw = self.show_progress_window()
 
         # 创建并启动处理线程
         self.alignment_thread = AlignmentThread(
-            self.input_path, self.output_path, hough_params,
-            self.log_browser, debug_mode, debug_basename, ref_path,
-            use_advanced, method, self.strong_denoise_check.isChecked()
+            self.input_path,
+            self.output_path,
+            self.params,
+            ref_path,
+            use_advanced,
+            method,
+            self.strong_denoise_check.isChecked(),
         )
 
         # 连接信号
@@ -537,12 +569,15 @@ class UniversalLunarAlignApp(QMainWindow):
         if success:
             QMessageBox.information(self, "处理完成", message)
         else:
-            QMessageBox.critical(self, "处理失败", f"处理过程中发生错误，详情请查看日志。\n\n{message}")
+            QMessageBox.critical(
+                self, "处理失败", f"处理过程中发生错误，详情请查看日志。\n\n{message}"
+            )
 
     def show_about_author(self):
         """显示关于作者窗口"""
         # TODO: 实现关于作者窗口
         QMessageBox.information(self, "关于作者", "关于作者功能正在开发中...")
+
 
 # 导入其他窗口类
 from ui_windows import DebugWindow, PreviewWindow, ProgressWindow

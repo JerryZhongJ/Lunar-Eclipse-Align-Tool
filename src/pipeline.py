@@ -19,8 +19,8 @@ from utils import (
 from algorithms_circle import Circle, detect_circle_phd2_enhanced, masked_phase_corr
 from version import VERSION
 
-# refine 返回可能是 (M, score, nin) 也可能是 (M, theta_deg, score, nin)
-from algorithms_refine import refine_alignment_multi_roi  # 兼容旧/新签名
+
+from algorithms_refine import refine_alignment_multi_roi
 from numpy.typing import NDArray
 
 
@@ -82,9 +82,9 @@ def save_debug_image(
 
 
 # ------------------ 缩略图辅助 ------------------
-def _detect_circle_on_thumb(
+def detect_circle_on_thumb(
     img: np.ndarray, hough: Hough, max_side=1600, strong_denoise=False
-) -> tuple[Circle, float, float, str]:
+) -> tuple[Circle, float]:
     """
     Returns:
     - Circle: (cx, cy, radius) in original image scale
@@ -113,30 +113,29 @@ def _detect_circle_on_thumb(
         param1=hough.param1,
         param2=hough.param2,
     )
-    t0 = time.time()
-    circle_s, _, quality_s, method_s, _ = detect_circle_phd2_enhanced(
-        small, s_hough, strong_denoise=strong_denoise
-    )
-    dt = time.time() - t0
+
+    (
+        circle_s,
+        quality_s,
+    ) = detect_circle_phd2_enhanced(small, s_hough, strong_denoise=strong_denoise)
 
     if circle_s is None:
         raise Exception("缩略图圆检测失败")
 
     circle = Circle(
-        x=float(circle_s.x / scale),
-        y=float(circle_s.y / scale),
-        radius=float(circle_s.radius / scale),
+        x=circle_s.x / scale,
+        y=circle_s.y / scale,
+        radius=circle_s.radius / scale,
     )
+
     return (
         circle,
-        scale,
         quality_s,
-        f"{method_s}(thumb,{small.shape[1]}x{small.shape[0]}, {dt:.2f}s)",
     )
 
 
 # ------------------ 目录设置 ------------------
-def _setup_directories(output_dir: Path, debug_mode: bool) -> tuple[Path, Path]:
+def _setup_directories(output_dir: Path) -> Path:
     """
     创建输出目录和调试目录
 
@@ -155,14 +154,14 @@ def _setup_directories(output_dir: Path, debug_mode: bool) -> tuple[Path, Path]:
     except Exception as e:
         raise Exception(f"无法创建输出文件夹: {output_dir}") from e
 
-    debug_dir = output_dir / "debug"
-    if debug_mode:
-        try:
-            debug_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            raise Exception(f"无法创建调试文件夹: {debug_dir}") from e
+    # debug_dir = output_dir / "debug"
+    # if debug_mode:
+    #     try:
+    #         debug_dir.mkdir(parents=True, exist_ok=True)
+    #     except Exception as e:
+    #         raise Exception(f"无法创建调试文件夹: {debug_dir}") from e
 
-    return output_dir, debug_dir
+    return output_dir
 
 
 # ------------------ 图像文件加载 ------------------
@@ -226,20 +225,17 @@ def _load_user_reference(
 
     # 先在缩略图做，映射回原图
     try:
-        circle, scale, q, meth = _detect_circle_on_thumb(
+        circle, q = detect_circle_on_thumb(
             ref_img, hough, max_side=1600, strong_denoise=strong_denoise
         )
 
         reference_image = ref_img.copy()
         reference_circle = circle
         best_quality = q
-        logging.info(
-            f"✓ 参考图像检测成功: 质量={q:.1f}, 方法={meth}, 半径≈{circle.radius:.1f}px"
-        )
     except Exception as e:
         logging.warning("缩略图检测失败，回退到原图做一次圆检测（可能较慢）...")
         t1 = time.time()
-        circle_full, _, qf, mf, _ = detect_circle_phd2_enhanced(
+        circle_full, qf = detect_circle_phd2_enhanced(
             ref_img, hough, strong_denoise=strong_denoise
         )
         dt1 = time.time() - t1
@@ -247,18 +243,14 @@ def _load_user_reference(
             reference_image = ref_img.copy()
             reference_circle = circle_full
             best_quality = float(qf)
-            logging.info(
-                f"✓ 参考图像检测成功: 质量={best_quality:.1f}, 方法={mf}, 半径≈{circle_full.radius:.1f}px, 用时 {dt1:.2f}s"
-            )
         else:
             raise Exception("参考图像圆检测失败")
 
     return reference_image, reference_circle, reference_path, best_quality
 
 
-def _auto_select_reference(
+def auto_select_reference(
     image_files: list[Path],
-    input_dir: Path,
     hough: Hough,
     progress_callback=None,
     strong_denoise: bool = False,
@@ -291,7 +283,7 @@ def _auto_select_reference(
         if img0 is None:
             continue
         try:
-            circle, scale, q, meth = _detect_circle_on_thumb(
+            circle, q = detect_circle_on_thumb(
                 img0, hough, max_side=1600, strong_denoise=strong_denoise
             )
             if q > best_quality:
@@ -299,7 +291,6 @@ def _auto_select_reference(
                 reference_circle = circle
                 reference_path = input_path
                 best_quality = q
-                logging.info(f"  候选参考图像: {input_path}, 质量={q:.1f}, 方法={meth}")
         except Exception as e:
             pass
         del img0
@@ -488,11 +479,8 @@ def _process_single_image(
     reference_path: Path,
     hough: Hough,
     last_circle: Circle | None,
-    debug_mode: bool = False,
-    debug_image_basename: str = "",
     use_advanced_alignment: bool = False,
     strong_denoise: bool = False,
-    debug_dir: Path | None = None,
 ) -> tuple[bool, Circle | None, dict, dict]:
     """
     处理单个图像的对齐
@@ -526,17 +514,6 @@ def _process_single_image(
             output_path = output_dir / f"aligned_{filename}"
             if imwrite_unicode(output_path, reference_image):
                 logging.info(f"  🎯 {filename}: [参考图像] 已保存")
-                if debug_mode and filename == debug_image_basename and debug_dir:
-                    save_debug_image(
-                        reference_image,
-                        reference_circle,
-                        reference_circle,
-                        Vector(0, 0),
-                        1.0,
-                        debug_dir,
-                        filename,
-                        reference_path,
-                    )
                 return True, last_circle, brightness_stats, method_stats
             else:
                 logging.info(f"  ✗ {filename}: 保存失败")
@@ -552,7 +529,7 @@ def _process_single_image(
 
         # 圆检测
         t_det = time.time()
-        circle, processed, quality = detect_circle_phd2_enhanced(
+        circle, quality = detect_circle_phd2_enhanced(
             target_image,
             hough,
             strong_denoise=strong_denoise,
@@ -564,9 +541,6 @@ def _process_single_image(
             logging.info(f"  ✗ {filename}: 圆检测失败(耗时 {dt_det:.2f}s)")
             del target_image
             return False, last_circle, brightness_stats, method_stats
-
-        brightness_stats[brightness] += 1
-        method_stats[method] = method_stats.get(method, 0) + 1
 
         # 初始对齐
         aligned, shift, confidence = _apply_initial_alignment(
@@ -593,32 +567,14 @@ def _process_single_image(
                 f"质量={quality:.1f}, 置信度={confidence:.3f}, 圆检耗时={dt_det:.2f}s, 读取={dt_read:.2f}s"
             )
 
-            if (
-                debug_mode
-                and filename == debug_image_basename
-                and processed is not None
-                and debug_dir
-            ):
-                save_debug_image(
-                    processed,
-                    circle,
-                    reference_circle,
-                    shift,
-                    confidence,
-                    debug_dir,
-                    filename,
-                    reference_path,
-                )
             del target_image, aligned
-            if "processed" in locals():
-                del processed
+
             force_garbage_collection()
             return True, new_last_circle, brightness_stats, method_stats
         else:
             logging.info(f"  ✗ {filename}: 变换成功但保存失败")
             del target_image, aligned
-            if "processed" in locals():
-                del processed
+
             force_garbage_collection()
             return False, last_circle, brightness_stats, method_stats
 
@@ -677,14 +633,10 @@ def align_moon_images_incremental(
     input_dir: Path,
     output_dir: Path,
     hough: Hough,
-    log_box=None,
-    debug_mode=False,
-    debug_image_basename="",
     completion_callback=None,
     progress_callback=None,
     reference_path: Path | None = None,
     use_advanced_alignment=False,
-    alignment_method="auto",
     strong_denoise=False,
 ):
     """
@@ -694,7 +646,7 @@ def align_moon_images_incremental(
     """
     try:
         # 1. 设置目录
-        output_dir, debug_dir = _setup_directories(output_dir, debug_mode)
+        output_dir = _setup_directories(output_dir)
 
         # 2. 加载图像文件
         image_files = _load_image_files(input_dir)
@@ -718,9 +670,8 @@ def align_moon_images_incremental(
             # 如果用户指定失败，自动选择
             try:
                 reference_image, reference_circle, reference_path, best_quality = (
-                    _auto_select_reference(
+                    auto_select_reference(
                         image_files,
-                        input_dir,
                         hough,
                         progress_callback,
                         strong_denoise,
@@ -763,11 +714,8 @@ def align_moon_images_incremental(
                     reference_path=reference_path,
                     hough=hough,
                     last_circle=last_circle,
-                    debug_mode=debug_mode,
-                    debug_image_basename=debug_image_basename,
                     use_advanced_alignment=use_advanced_alignment,
                     strong_denoise=strong_denoise,
-                    debug_dir=debug_dir,
                 )
             )
 
