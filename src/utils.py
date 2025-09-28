@@ -1,7 +1,9 @@
 # utils_common.py
+from dataclasses import dataclass
+import math
 from pathlib import Path
 import os, sys, platform, gc
-from typing import Any, NamedTuple
+from typing import Any, Generator, Generic, NamedTuple, Type, TypeVar, overload
 import numpy as np
 import cv2
 from PIL import Image
@@ -9,6 +11,7 @@ from PIL import Image
 import piexif
 
 import tkinter as tk
+from numpy.typing import NDArray
 
 # ----------------- 系统/常量 -----------------
 SYSTEM = platform.system()
@@ -18,30 +21,39 @@ IS_LINUX = SYSTEM == "Linux"
 
 DEFAULT_DEBUG_MODE = False
 DEFAULT_DEBUG_IMAGE_PATH = ""
-SUPPORTED_EXTS = {'*.tif', '*.tiff', '*.bmp', '*.png', '*.jpg', '*.jpeg'}
+SUPPORTED_EXTS = {"*.tif", "*.tiff", "*.bmp", "*.png", "*.jpg", "*.jpeg"}
 
 # 内存管理
 MAX_IMAGES_IN_MEMORY = 10
 MEMORY_THRESHOLD_MB = 500
 
+
 def get_memory_usage_mb():
     try:
         import psutil
+
         process = psutil.Process(os.getpid())
         return process.memory_info().rss / 1024 / 1024
     except ImportError:
         return 0.0
 
+
 def force_garbage_collection():
     gc.collect()
+
 
 class MemoryManager:
     def __init__(self, threshold_mb=MEMORY_THRESHOLD_MB):
         self.threshold_mb = threshold_mb
         self.image_cache = {}
         self.access_order = []
+
     def should_clear_memory(self):
-        return get_memory_usage_mb() > self.threshold_mb or len(self.image_cache) > MAX_IMAGES_IN_MEMORY
+        return (
+            get_memory_usage_mb() > self.threshold_mb
+            or len(self.image_cache) > MAX_IMAGES_IN_MEMORY
+        )
+
     def clear_old_images(self, keep_count=5):
         if len(self.access_order) > keep_count:
             to_remove = self.access_order[:-keep_count]
@@ -51,25 +63,30 @@ class MemoryManager:
                 self.access_order.remove(key)
         force_garbage_collection()
 
+
 class Hough(NamedTuple):
-    min_radius: int
-    max_radius: int
+    minRadius: int
+    maxRadius: int
     param1: int
     param2: int
-    
-def imread_unicode(path: Path, flags=cv2.IMREAD_UNCHANGED) ->  np.ndarray[Any, np.dtype[np.integer[Any] | np.floating[Any]]] | None:
+
+
+def imread_unicode(
+    path: Path, flags=cv2.IMREAD_UNCHANGED
+) -> np.ndarray[Any, np.dtype[np.integer[Any] | np.floating[Any]]] | None:
     try:
         data = np.fromfile(path, dtype=np.uint8)
-        return cv2.imdecode(data, flags)  
+        return cv2.imdecode(data, flags)
     except Exception as e:
         print(f"图像读取失败 {path}: {e}")
         return None
 
-def imwrite_unicode(path: Path, image: np.ndarray)-> bool:
+
+def imwrite_unicode(path: Path, image: np.ndarray) -> bool:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         ext = path.suffix.lower() or ".tiff"
-   
+
         if ext in (".tif", ".tiff"):
             params = [cv2.IMWRITE_TIFF_COMPRESSION, 1]
         else:
@@ -82,6 +99,7 @@ def imwrite_unicode(path: Path, image: np.ndarray)-> bool:
     except Exception as e:
         print(f"图像保存失败 {path}: {e}")
         return False
+
 
 def imwrite_with_exif(src_path: Path, dst_path: Path, img_bgr: np.ndarray) -> bool:
     """
@@ -151,6 +169,7 @@ def imwrite_with_exif(src_path: Path, dst_path: Path, img_bgr: np.ndarray) -> bo
         # 任意异常回退
         return imwrite_unicode(dst_path, img_bgr)
 
+
 def to_display_rgb(img: np.ndarray) -> np.ndarray:
     img = img.astype(np.float32)
     cv2.normalize(img, img, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
@@ -161,20 +180,217 @@ def to_display_rgb(img: np.ndarray) -> np.ndarray:
     elif img.shape[2] == 3:
         return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     else:
-        return cv2.cvtColor(img[:,:,:3], cv2.COLOR_BGR2RGB)
+        return cv2.cvtColor(img[:, :, :3], cv2.COLOR_BGR2RGB)
 
 
-# 统一日志
-def log(msg, log_box=None):
-    if log_box:
-        try:
-            log_box.master.after(0, lambda: (
-                log_box.config(state="normal"),
-                log_box.insert(tk.END, str(msg) + "\n"),
-                log_box.see(tk.END),
-                log_box.config(state="disabled")
-            ))
-        except Exception:
-            pass
-    if msg:
-        print(msg)
+dataType = TypeVar("dataType", int, float)
+
+
+@dataclass(frozen=True)
+class Position(Generic[dataType]):
+    x: dataType
+    y: dataType
+
+    def __add__(self, delta: "Vector[dataType]") -> "Position[dataType]":
+        return Position(self.x + delta.x, self.y + delta.y)
+
+    @overload
+    def __sub__(self, other: "Position[dataType]") -> "Vector[dataType]": ...
+    @overload
+    def __sub__(self, other: "Vector[dataType]") -> "Position[dataType]": ...
+    def __sub__(
+        self, other: "Position[dataType] | Vector[dataType]"
+    ) -> "Vector[dataType] | Position[dataType]":
+        if isinstance(other, Vector):
+            return Position(self.x - other.x, self.y - other.y)
+        else:
+            return Vector(self.x - other.x, self.y - other.y)
+
+    dataType2 = TypeVar("dataType2", int, float)
+
+    def as_type(self, dType: Type[dataType2]) -> "Position[dataType2]":
+        return Position(dType(self.x), dType(self.y))
+
+
+class PositionArray:
+    def __init__(self, arr: NDArray, safe: bool = True):
+        assert arr.ndim == 2 and arr.shape[1] == 2
+        if safe:
+            self._arr = arr.astype(np.float64, copy=True)
+        else:
+            self._arr = arr
+
+    def __iter__(self) -> Generator[Position, Any, None]:
+        for x, y in self._arr:
+            yield Position(x, y)
+
+    def __add__(self, vector: "Vector[float] | VectorArray") -> "PositionArray":
+        if isinstance(vector, VectorArray):
+            return PositionArray(self._arr + vector._arr, safe=False)
+        else:
+            return PositionArray(
+                self._arr + np.array([[vector.x, vector.y]]), safe=False
+            )
+
+    def __sub__(self, other: "Position[float] | PositionArray") -> "VectorArray":
+        if isinstance(other, Position):
+            return VectorArray(self._arr - np.array([[other.x, other.y]]), safe=False)
+        else:
+            return VectorArray(self._arr - other._arr, safe=False)
+
+    def __len__(self) -> int:
+        return self._arr.shape[0]
+
+    @property
+    def x(self) -> NDArray[np.float64]:
+        return self._arr[:, 0]
+
+    @property
+    def y(self) -> NDArray[np.float64]:
+        return self._arr[:, 1]
+
+    def filter(self, mask: NDArray[np.bool_]) -> "PositionArray":
+        return PositionArray(self._arr[mask], safe=False)
+
+
+@dataclass(frozen=True)
+class Vector(Generic[dataType]):
+    x: dataType
+    y: dataType
+
+    dataType2 = TypeVar("dataType2", int, float)
+
+    @staticmethod
+    def from_ndarray(arr: NDArray, dataType: Type[dataType2]) -> "Vector[dataType2]":
+        assert arr.ndim == 1 and arr.shape[0] == 2
+        return Vector(dataType(arr[0]), dataType(arr[1]))
+
+    def as_type(self, dType: Type[dataType2]) -> "Vector[dataType2]":
+        return Vector(dType(self.x), dType(self.y))
+
+    def norm(self) -> float:
+        return math.hypot(self.x, self.y)
+
+    def normalize(self) -> "Vector[float]":
+        n = self.norm() + 1e-6
+        return Vector(self.x / n, self.y / n)
+
+    def __add__(self, other: "Vector[dataType]") -> "Vector[dataType]":
+        return Vector(self.x + other.x, self.y + other.y)
+
+    def __sub__(self, other: "Vector[dataType]") -> "Vector[dataType]":
+        return Vector(self.x - other.x, self.y - other.y)
+
+    @overload
+    def __mul__(self, other: float) -> "Vector[float]": ...
+    @overload
+    def __mul__(self, other: "Vector[dataType]") -> dataType: ...
+
+    def __mul__(self, other: "float | Vector[dataType]") -> "float | Vector[float]":
+        if isinstance(other, Vector):
+            return self.x * other.x + self.y * other.y
+        else:
+            return Vector(self.x * other, self.y * other)
+
+    def __div__(self, other: float) -> "Vector":
+        return Vector(self.x / other, self.y / other)
+
+
+class VectorArray:
+    """
+    为了节省性能，VectorArray直接使用
+    """
+
+    def __init__(self, arr: NDArray, safe: bool = True):
+        assert arr.ndim == 2 and arr.shape[1] == 2
+        if safe:
+            self._arr = arr.astype(np.float64, copy=True)
+        else:
+            self._arr = arr
+
+    def norms(self) -> NDArray[np.float64]:
+        return np.hypot(self._arr[:, 0], self._arr[:, 1])
+
+    def normalize(self) -> "VectorArray":
+        norms = self.norms() + 1e-6
+        return VectorArray(self._arr / norms[:, np.newaxis], safe=False)
+
+    @overload
+    def __mul__(self, other: float | NDArray[np.floating]) -> "VectorArray": ...
+    @overload
+    def __mul__(self, other: "VectorArray | Vector[float]") -> NDArray[np.float64]: ...
+    def __mul__(
+        self, other: "float | NDArray[np.floating] | VectorArray | Vector[float]"
+    ) -> "NDArray[np.float64] | VectorArray":
+        if isinstance(other, float):
+            return VectorArray(self._arr * other, safe=False)
+        elif isinstance(other, np.ndarray):
+            assert other.ndim == 1 and other.shape[0] == self._arr.shape[0]
+            return VectorArray(self._arr * other[:, np.newaxis], safe=False)
+
+        elif isinstance(other, Vector):
+            return self._arr[:, 0] * other.x + self._arr[:, 1] * other.y
+        elif isinstance(other, VectorArray):
+            return (
+                self._arr[:, 0] * other._arr[:, 0] + self._arr[:, 1] * other._arr[:, 1]
+            )
+        raise TypeError("Unsupported type for multiplication")
+
+    def __add__(self, other: "VectorArray | Vector[float]") -> "VectorArray":
+        if isinstance(other, Vector):
+            return VectorArray(self._arr + np.array([[other.x, other.y]]), safe=False)
+        else:
+            return VectorArray(self._arr + other._arr, safe=False)
+
+    def __sub__(self, other: "VectorArray | Vector[float]") -> "VectorArray":
+        if isinstance(other, Vector):
+            return VectorArray(self._arr - np.array([[other.x, other.y]]), safe=False)
+        else:
+            return VectorArray(self._arr - other._arr, safe=False)
+
+    def __div__(self, other: float) -> "VectorArray":
+        return VectorArray(self._arr / other, safe=False)
+
+    def __iter__(self) -> Generator[Vector[float], Any, None]:
+        for x, y in self._arr:
+            yield Vector(x, y)
+
+    def __len__(self) -> int:
+        return self._arr.shape[0]
+
+    @property
+    def x(self) -> NDArray[np.float64]:
+        return self._arr[:, 0]
+
+    @property
+    def y(self) -> NDArray[np.float64]:
+        return self._arr[:, 1]
+
+    def filter(self, mask: NDArray[np.bool_]) -> "VectorArray":
+        return VectorArray(self._arr[mask], safe=False)
+
+
+@dataclass(frozen=True)
+class Circle(Position[float]):
+    radius: float
+
+    def shift(self, delta: "Vector[float]") -> "Circle":
+        return Circle(self.x + delta.x, self.y + delta.y, self.radius)
+
+    def scale(self, factor: float) -> "Circle":
+        return Circle(self.x, self.y, self.radius * factor)
+
+
+@dataclass(frozen=True)
+class ROI(Position[int]):
+    w: int
+    h: int
+    score: float = 0.0  # 可选的置信度评分
+
+    @property
+    def size(self) -> Vector[int]:
+        return Vector(self.w, self.h)
+
+    @property
+    def center(self) -> Position[float]:
+        return Position(self.x + self.w / 2.0, self.y + self.h / 2.0)

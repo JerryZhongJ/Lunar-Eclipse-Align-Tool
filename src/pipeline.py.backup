@@ -1,0 +1,568 @@
+import itertools
+import logging
+from pathlib import Path
+import os, math, time
+
+import cv2, numpy as np
+
+from utils import (
+    Hough,
+    Position,
+    Vector,
+    imread_unicode,
+    imwrite_unicode,
+    get_memory_usage_mb,
+    force_garbage_collection,
+    SUPPORTED_EXTS,
+)
+
+from algorithms_circle import Circle, detect_circle_phd2_enhanced, masked_phase_corr
+from version import VERSION
+
+# refine 返回可能是 (M, score, nin) 也可能是 (M, theta_deg, score, nin)
+from algorithms_refine import refine_alignment_multi_roi  # 兼容旧/新签名
+from numpy.typing import NDArray
+
+
+# ------------------ 调试图保存 ------------------
+def save_debug_image(
+    processed_img: NDArray,
+    target_center: Position[float],
+    reference_center: Position[float],
+    shift: Vector[float],
+    confidence,
+    method,
+    debug_dir: Path,
+    filename,
+    reference_filename,
+):
+    try:
+        if processed_img is None:
+            return
+        if processed_img.ndim == 2:
+            debug_image = cv2.cvtColor(processed_img, cv2.COLOR_GRAY2BGR)
+        else:
+            debug_image = processed_img.copy()
+        cv2.circle(
+            debug_image,
+            (int(target_center.x), int(target_center.y)),
+            5,
+            (0, 0, 255),
+            -1,
+        )
+        cv2.circle(
+            debug_image,
+            (int(reference_center.x), int(reference_center.y)),
+            15,
+            (0, 255, 255),
+            3,
+        )
+        cv2.line(
+            debug_image,
+            (int(target_center.x), int(target_center.y)),
+            (int(reference_center.x), int(reference_center.y)),
+            (0, 255, 255),
+            2,
+        )
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        texts = [
+            f"Method: {method[:35]}",
+            f"Shift: ({shift.x:.1f}, {shift.y:.1f})",
+            f"Confidence: {confidence:.3f}",
+            f"Reference: {reference_filename}",
+            f"Mode: Incremental Processing",
+        ]
+        for j, t in enumerate(texts):
+            cv2.putText(
+                debug_image, t, (10, 25 + j * 25), font, 0.6, (255, 255, 255), 2
+            )
+        debug_path = debug_dir / f"debug_{filename}"
+        imwrite_unicode(debug_path, debug_image)
+    except Exception as e:
+        print(f"调试图像生成失败: {e}")
+
+
+# ------------------ 缩略图辅助 ------------------
+def _detect_circle_on_thumb(
+    img: np.ndarray, hough: Hough, max_side=1600, strong_denoise=False
+) -> tuple[Circle, float, float, str]:
+    """
+    Returns:
+    - Circle: (cx, cy, radius) in original image scale
+    - scale: float, the scale factor from original to thumbnail
+    - quality: float, quality score of the detected circle
+    - method: str, description of the detection method used
+    Raises Exception if detection fails
+    仅用于辅助选择参考图像
+    """
+    H, W = img.shape[:2]
+    max_wh = max(H, W)
+    scale = 1.0
+    if max_wh > max_side:
+        scale = max_side / float(max_wh)
+    small = (
+        cv2.resize(img, (int(W * scale), int(H * scale)), interpolation=cv2.INTER_AREA)
+        if scale < 1.0
+        else img
+    )
+
+    s_hough = Hough(
+        minRadius=max(1, int(hough.minRadius * scale)),
+        maxRadius=max(
+            2, int(hough.minRadius * scale) + 1, int(hough.maxRadius * scale)
+        ),
+        param1=hough.param1,
+        param2=hough.param2,
+    )
+    t0 = time.time()
+    circle_s, _, quality_s, method_s, _ = detect_circle_phd2_enhanced(
+        small, s_hough, strong_denoise=strong_denoise
+    )
+    dt = time.time() - t0
+
+    if circle_s is None:
+        raise Exception("缩略图圆检测失败")
+
+    circle = Circle(
+        x=float(circle_s.x / scale),
+        y=float(circle_s.y / scale),
+        radius=float(circle_s.radius / scale),
+    )
+    return (
+        circle,
+        scale,
+        quality_s,
+        f"{method_s}(thumb,{small.shape[1]}x{small.shape[0]}, {dt:.2f}s)",
+    )
+
+
+# ------------------ 主流程 ------------------
+
+
+def align_moon_images_incremental(
+    input_dir: Path,
+    output_dir: Path,
+    hough: Hough,
+    log_box=None,
+    debug_mode=False,
+    debug_image_basename="",
+    completion_callback=None,
+    progress_callback=None,
+    reference_image_path=None,
+    use_advanced_alignment=False,
+    alignment_method="auto",
+    strong_denoise=False,
+):
+    try:
+
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            raise Exception(f"无法创建输出文件夹: {output_dir}") from e
+
+        debug_dir = output_dir / "debug"
+        if debug_mode:
+            try:
+                debug_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                raise Exception(f"无法创建调试文件夹: {debug_dir}") from e
+
+        try:
+            image_files = sorted(
+                itertools.chain.from_iterable(
+                    input_dir.glob(ext) for ext in SUPPORTED_EXTS
+                )
+            )
+        except Exception as e:
+            raise Exception(f"读取输入文件夹失败: {e}")
+
+        if not image_files:
+            raise Exception(f"在 '{input_dir}' 中未找到支持的图片文件")
+
+        input_files_num = len(image_files)
+
+        logging.info(f"月食圆面对齐工具 V{VERSION} - 增量处理版")
+        logging.info(f"处理模式: 增量处理 (边检测边保存)")
+        logging.info(f"文件总数: {input_files_num}")
+        logging.info(f"多ROI精配准: {'启用' if use_advanced_alignment else '禁用'}")
+
+        # 参考图像
+        logging.info("阶段 1/2: 确定参考图像...")
+        reference_image = None
+        reference_circle: Circle | None = None
+        reference_filename = None
+        best_quality = 0.0
+        reference_radius = None
+
+        # ---------- 用户指定参考图 ----------
+        if reference_image_path and os.path.exists(reference_image_path):
+            ref_filename = os.path.basename(reference_image_path)
+            logging.info(f"加载用户指定的参考图像: {ref_filename}")
+
+            t_ref0 = time.time()
+            ref_img = imread_unicode(reference_image_path, cv2.IMREAD_UNCHANGED)
+            if ref_img is not None:
+                H, W = ref_img.shape[:2]
+                logging.info(f"参考图尺寸: {W}x{H}")
+
+                # 先在缩略图做，映射回原图
+                try:
+                    circle, scale, q, meth = _detect_circle_on_thumb(
+                        ref_img, hough, max_side=1600, strong_denoise=strong_denoise
+                    )
+
+                    reference_image = ref_img.copy()
+                    reference_circle = circle
+                    reference_filename = ref_filename
+                    best_quality = q
+                    logging.info(
+                        f"✓ 参考图像检测成功: 质量={q:.1f}, 方法={meth}, 半径≈{reference_radius:.1f}px"
+                    )
+                except Exception as e:
+                    logging.info(
+                        "缩略图检测失败，回退到原图做一次圆检测（可能较慢）..."
+                    )
+                    t1 = time.time()
+                    circle_full, _, qf, mf, _ = detect_circle_phd2_enhanced(
+                        ref_img, hough, strong_denoise=strong_denoise
+                    )
+                    dt1 = time.time() - t1
+                    if circle_full is not None:
+                        reference_image = ref_img.copy()
+                        reference_circle = circle_full
+                        reference_filename = ref_filename
+                        best_quality = float(qf)
+                        logging.info(
+                            f"✓ 参考图像检测成功: 质量={best_quality:.1f}, 方法={mf}, 半径≈{reference_radius:.1f}px, 用时 {dt1:.2f}s"
+                        )
+                    else:
+                        logging.info("✗ 参考图像检测失败，将自动选择")
+            else:
+                logging.info("✗ 参考图像读取失败，将自动选择")
+
+        # ---------- 自动扫描前 N 张 ----------
+        if reference_image is None:
+            scan_count = min(10, input_files_num)
+            logging.info(f"自动选择参考图像 (扫描前{scan_count}张)...")
+            for i, filename in enumerate(image_files[:scan_count]):
+                if progress_callback:
+                    progress_callback(
+                        int((i / scan_count) * 20), f"扫描参考图像: {filename}"
+                    )
+                input_path = input_dir / filename
+                img0 = imread_unicode(input_path, cv2.IMREAD_UNCHANGED)
+                if img0 is None:
+                    continue
+                try:
+                    circle, scale, q, meth = _detect_circle_on_thumb(
+                        img0, hough, max_side=1600, strong_denoise=strong_denoise
+                    )
+                    if q > best_quality:
+                        reference_image = img0.copy()
+                        reference_circle = circle
+                        reference_filename = filename
+                        best_quality = q
+                        reference_radius = circle.radius
+                        logging.info(
+                            f"  候选参考图像: {filename}, 质量={q:.1f}, 方法={meth}"
+                        )
+                except Exception as e:
+                    pass
+                del img0
+                force_garbage_collection()
+
+        if reference_image is None:
+            raise Exception("无法找到有效的参考图像，请检查图像质量和参数设置")
+
+        logging.info(
+            f"🎯 最终参考图像: {reference_filename}, 质量评分={best_quality:.1f}"
+        )
+
+        # 处理所有图像
+        logging.info(f"\n阶段 2/2: 增量处理所有图像...")
+        success_count = 0
+        failed_files = []
+        brightness_stats = {"bright": 0, "normal": 0, "dark": 0}
+        method_stats = {}
+
+        # 以参考图圆作为先验，后续逐帧更新
+        assert reference_circle is not None
+        last_circle: Circle | None = reference_circle
+        for i, filename in enumerate(image_files):
+            if progress_callback:
+                progress_callback(
+                    20 + int((i / input_files_num) * 80), f"处理: {filename}"
+                )
+            try:
+                input_path = input_dir / filename
+
+                # 参考图：直接另存
+                if filename == reference_filename:
+                    output_path = output_dir / f"aligned_{filename}"
+                    if imwrite_unicode(output_path, reference_image):
+                        success_count += 1
+                        logging.info(f"  🎯 {filename}: [参考图像] 已保存")
+                        if debug_mode and filename == debug_image_basename:
+                            save_debug_image(
+                                reference_image,
+                                reference_circle,
+                                reference_circle,
+                                Vector(0, 0),
+                                1.0,
+                                "Reference Image",
+                                output_dir / "debug",
+                                filename,
+                                reference_filename,
+                            )
+                    else:
+                        logging.info(f"  ✗ {filename}: 保存失败")
+                        failed_files.append(filename)
+                    continue
+
+                # 读取目标
+                t_read = time.time()
+                target_image: NDArray | None = imread_unicode(
+                    input_path, cv2.IMREAD_UNCHANGED
+                )
+                if target_image is None:
+                    logging.info(f"  ✗ {filename}: 读取失败")
+                    failed_files.append(filename)
+                    continue
+                dt_read = time.time() - t_read
+
+                # 圆检测
+                t_det = time.time()
+                circle, processed, quality, method, brightness = (
+                    detect_circle_phd2_enhanced(
+                        target_image,
+                        hough,
+                        strong_denoise=strong_denoise,
+                        prev_circle=last_circle,
+                    )
+                )
+                dt_det = time.time() - t_det
+
+                if circle is None:
+                    logging.info(f"  ✗ {filename}: 圆检测失败(耗时 {dt_det:.2f}s)")
+                    failed_files.append(filename)
+                    del target_image
+                    continue
+
+                brightness_stats[brightness] += 1
+                method_stats[method] = method_stats.get(method, 0) + 1
+
+                target_center = circle
+
+                # 初始：圆心平移到参考
+                shift = reference_circle - circle
+
+                confidence: float = max(0.30, min(0.98, quality / 100.0))
+                align_method = "Circle Center"
+
+                rows, cols = target_image.shape[:2]
+                M = np.array([[1, 0, shift.x], [0, 1, shift.y]], dtype=np.float64)
+
+                aligned: NDArray = cv2.warpAffine(
+                    target_image,
+                    M,
+                    (cols, rows),
+                    flags=cv2.INTER_LANCZOS4,
+                    borderMode=cv2.BORDER_CONSTANT,
+                    borderValue=0,
+                )
+
+                # 多 ROI 精配准（仅平移，无旋转）
+                try:
+                    if reference_radius is not None and use_advanced_alignment:
+                        ref_gray = (
+                            reference_image
+                            if reference_image.ndim == 2
+                            else cv2.cvtColor(reference_image, cv2.COLOR_BGR2GRAY)
+                        )
+                        tgt_gray2 = (
+                            aligned
+                            if aligned.ndim == 2
+                            else cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY)
+                        )
+
+                        roi_size = max(64, min(160, int(reference_radius * 0.18)))
+                        max_refine_delta_px = 6.0
+                        t_refine = time.time()
+                        M2x3, score, n_inliers, theta_deg = refine_alignment_multi_roi(
+                            ref_gray,
+                            tgt_gray2,
+                            reference_circle,
+                            n_rois=16,
+                            roi_size=roi_size,
+                            search=12,
+                            use_phasecorr=True,
+                            use_ecc=False,
+                            base_shift=shift,
+                            max_refine_delta_px=max_refine_delta_px,
+                        )
+                        dt_refine = time.time() - t_refine
+
+                        roi_used = roi_size
+                        logging.info(
+                            f"    [Refine] score={score:.3f}, inliers={n_inliers}, roi_init≈{roi_used}, t={dt_refine:.2f}s"
+                        )
+                        residual = None
+                        if M2x3 is not None:
+                            tx = float(M2x3[0, 2])
+                            ty = float(M2x3[1, 2])
+                            residual = (tx**2 + ty**2) ** 0.5
+                            logging.info(f"    [Refine] 残差=Δ{residual:.2f}px")
+                            if residual > max_refine_delta_px:
+                                M2 = None
+                                logging.info(
+                                    f"    [Refine] 残差过大(Δ={residual:.2f}px > {max_refine_delta_px:.1f}px)，放弃精配准并保持霍夫平移"
+                                )
+                        if M2x3 is not None:
+                            aligned = cv2.warpAffine(
+                                aligned,
+                                M2x3,
+                                (cols, rows),
+                                flags=cv2.INTER_LANCZOS4,
+                                borderMode=cv2.BORDER_CONSTANT,
+                                borderValue=0,
+                            )
+                            confidence = max(confidence, float(score))
+                            align_method = f"Multi-ROI refine (仅平移, inliers={n_inliers}, roi_init≈{roi_used}, Δ={residual:.2f}px, gate≤{max_refine_delta_px:.0f}px, {dt_refine:.2f}s)"
+                        else:
+                            logging.info("    [Refine] 无有效解，回退 Masked PhaseCorr")
+                            # 遮罩相位相关微调（仅平移）
+                            t_pc = time.time()
+                            d2 = masked_phase_corr(
+                                ref_gray,
+                                tgt_gray2,
+                                reference_circle,
+                            )
+                            dt_pc = time.time() - t_pc
+                            if abs(d2.x) > 1e-3 or abs(d2.y) > 1e-3:
+                                M2 = np.array(
+                                    [[1, 0, d2.x], [0, 1, d2.y]], dtype=np.float32
+                                )
+                                aligned = cv2.warpAffine(
+                                    aligned,
+                                    M2,
+                                    (cols, rows),
+                                    flags=cv2.INTER_LANCZOS4,
+                                    borderMode=cv2.BORDER_CONSTANT,
+                                    borderValue=0,
+                                )
+                                align_method = f"Masked PhaseCorr ({dt_pc:.2f}s)"
+                    elif reference_radius is not None:
+                        # 未启用高级：遮罩相位相关微调
+                        ref_gray = (
+                            reference_image
+                            if reference_image.ndim == 2
+                            else cv2.cvtColor(reference_image, cv2.COLOR_BGR2GRAY)
+                        )
+                        tgt_gray2 = (
+                            aligned
+                            if aligned.ndim == 2
+                            else cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY)
+                        )
+                        d2 = masked_phase_corr(
+                            ref_gray,
+                            tgt_gray2,
+                            reference_circle,
+                        )
+                        if abs(d2.x) > 1e-3 or abs(d2.y) > 1e-3:
+                            M2 = np.array(
+                                [[1, 0, d2.x], [0, 1, d2.y]], dtype=np.float32
+                            )
+                            aligned = cv2.warpAffine(
+                                aligned,
+                                M2,
+                                (cols, rows),
+                                flags=cv2.INTER_LANCZOS4,
+                                borderMode=cv2.BORDER_CONSTANT,
+                                borderValue=0,
+                            )
+                            align_method = "Masked PhaseCorr"
+                except Exception as e:
+                    logging.info(f"    [Refine异常] {filename}: {e}")
+
+                # 保存
+                out_path = output_dir / f"aligned_{filename}"
+                if imwrite_unicode(out_path, aligned):
+                    success_count += 1
+                    # 更新上一帧先验
+                    try:
+                        last_circle = circle
+                    except Exception:
+                        pass
+                    logging.info(
+                        f"  ✓ {filename}: 偏移=({shift.x:.1f},{shift.y:.1f}), "
+                        f"质量={quality:.1f}, 置信度={confidence:.3f}, 圆检耗时={dt_det:.2f}s, 读取={dt_read:.2f}s | {align_method}"
+                    )
+
+                    if (
+                        debug_mode
+                        and filename == debug_image_basename
+                        and processed is not None
+                    ):
+                        save_debug_image(
+                            processed,
+                            target_center,
+                            reference_circle,
+                            shift,
+                            confidence,
+                            align_method,
+                            debug_dir,
+                            filename,
+                            reference_filename,
+                        )
+                else:
+                    logging.info(f"  ✗ {filename}: 变换成功但保存失败")
+                    failed_files.append(filename)
+
+                del target_image, aligned
+                if "processed" in locals():
+                    del processed
+                force_garbage_collection()
+
+            except Exception as e:
+                logging.info(f"  ✗ {filename}: 处理异常 - {e}")
+                failed_files.append(filename)
+                for v in ["target_image", "aligned", "processed"]:
+                    if v in locals():
+                        del locals()[v]
+                force_garbage_collection()
+
+        if progress_callback:
+            progress_callback(100, "处理完成")
+        del reference_image
+        force_garbage_collection()
+
+        logging.info(f"增量对齐完成! 成功对齐 {success_count}/{input_files_num} 张图像")
+        logging.info(f"使用参考图像: {reference_filename}")
+        logging.info(
+            f"对齐算法: {'多ROI精配准（仅平移）' if use_advanced_alignment else 'PHD2圆心算法'}"
+        )
+        if failed_files:
+            head = ", ".join(failed_files[:5]) + (
+                "..." if len(failed_files) > 5 else ""
+            )
+            logging.info(f"失败文件({len(failed_files)}): {head}")
+        if method_stats:
+            logging.info(
+                "圆检测方法统计: "
+                + ", ".join([f"{k}={v}" for k, v in method_stats.items()])
+            )
+        logging.info(f"当前内存使用: {get_memory_usage_mb():.1f} MB")
+        if completion_callback:
+            completion_callback(
+                True, f"增量处理完成！成功对齐 {success_count}/{input_files_num} 张图像"
+            )
+
+    except Exception as e:
+        import traceback
+
+        err = f"增量处理过程中发生错误: {e}\n{traceback.format_exc()}"
+        logging.error(err)
+        if completion_callback:
+            completion_callback(False, err)
+    finally:
+        force_garbage_collection()

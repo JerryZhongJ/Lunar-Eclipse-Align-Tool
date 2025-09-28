@@ -36,6 +36,7 @@ dependencies = [
     "psutil",
     "PySide6>=6.9.2",
     "scipy>=1.16",
+    "scikit-image>=0.25.2"
 ]
 
 [project.scripts]
