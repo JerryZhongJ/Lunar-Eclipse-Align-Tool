@@ -21,6 +21,7 @@ SUPPORTED_EXTS = {"*.tif", "*.tiff", "*.bmp", "*.png", "*.jpg", "*.jpeg"}
 MAX_IMAGES_IN_MEMORY = 10
 MEMORY_THRESHOLD_MB = 500
 MAX_SCAN_COUNT = 10
+MAX_SIDE = 1600  # 图像最长边缩略尺寸
 
 
 def get_memory_usage_mb():

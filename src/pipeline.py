@@ -9,6 +9,7 @@ import cv2, numpy as np
 from image import Image, ImageFile
 from utils import (
     MAX_SCAN_COUNT,
+    MAX_SIDE,
     DetectionResult,
     Hough,
     Position,
@@ -83,7 +84,7 @@ from numpy.typing import NDArray
 
 # ------------------ 缩略图辅助 ------------------
 def detect_circle_on_thumb(
-    bgr: NDArray, hough: Hough, max_side=1600, strong_denoise=False
+    img: Image, hough: Hough, scale: float, strong_denoise=False
 ) -> DetectionResult | None:
     """
     Returns:
@@ -94,18 +95,17 @@ def detect_circle_on_thumb(
     Raises Exception if detection fails
     仅用于辅助选择参考图像
     """
-    H, W = bgr.shape[:2]
-    max_wh = max(H, W)
-    scale = 1.0
-    if max_wh > max_side:
-        scale = max_side / float(max_wh)
-    small = (
-        cv2.resize(bgr, (int(W * scale), int(H * scale)), interpolation=cv2.INTER_AREA)
-        if scale < 1.0
-        else bgr
+    assert scale < 1
+
+    small_img = Image(
+        rgb=cv2.resize(
+            img.rgb,
+            (int(img.width * scale), int(img.height * scale)),
+            interpolation=cv2.INTER_AREA,
+        )
     )
 
-    s_hough = Hough(
+    small_hough = Hough(
         minRadius=max(1, int(hough.minRadius * scale)),
         maxRadius=max(
             2, int(hough.minRadius * scale) + 1, int(hough.maxRadius * scale)
@@ -114,7 +114,7 @@ def detect_circle_on_thumb(
         param2=hough.param2,
     )
 
-    result = detect_circle(small, s_hough, strong_denoise=strong_denoise)
+    result = detect_circle(small_img, small_hough, strong_denoise=strong_denoise)
     if result is None:
         logging.error("缩略图圆检测失败")
         return None
@@ -128,6 +128,26 @@ def detect_circle_on_thumb(
     return DetectionResult(circle, result.quality)
 
 
+def detect_circle_quickly(
+    img: Image, hough: Hough, strong_denoise=False
+) -> DetectionResult | None:
+
+    max_wh = max(img.height, img.width)
+    if max_wh > MAX_SIDE:
+        scale = MAX_SIDE / float(max_wh)
+        result = detect_circle_on_thumb(
+            img, hough, scale, strong_denoise=strong_denoise
+        )
+        if result:
+            return result
+        logging.warning("缩略图检测失败，回退到原图做一次圆检测...")
+
+    result = detect_circle(img, hough, strong_denoise=strong_denoise)
+    if not result:
+        logging.warning("原图检测失败...")
+    return result
+
+
 # ------------------ 参考图像选择 ------------------
 def _load_user_reference(
     reference_file: ImageFile, hough: Hough, strong_denoise: bool = False
@@ -137,23 +157,9 @@ def _load_user_reference(
     if ref_img is None:
         raise Exception(f"无法加载参考图像: {reference_file.path}")
 
-    ref_bgr = ref_img.bgr
+    logging.info(f"参考图尺寸: {ref_img.height}x{ref_img.width}")
 
-    H, W = ref_bgr.shape[:2]
-    logging.info(f"参考图尺寸: {W}x{H}")
-
-    # 先在缩略图做，映射回原图
-    try:
-        return detect_circle_on_thumb(
-            ref_bgr, hough, max_side=1600, strong_denoise=strong_denoise
-        )
-    except Exception:
-        pass
-
-    logging.warning("缩略图检测失败，回退到原图做一次圆检测（可能较慢）...")
-
-    result = detect_circle(ref_bgr, hough, strong_denoise=strong_denoise)
-
+    result = detect_circle_quickly(ref_img, hough, strong_denoise=strong_denoise)
     if not result:
         logging.warning(f"用户指定参考图像无效: {reference_file.path.name}，将自动选择")
     return result
@@ -190,9 +196,7 @@ def auto_select_reference(
         if not img:
             continue
 
-        result = detect_circle_on_thumb(
-            img.bgr, hough, max_side=1600, strong_denoise=strong_denoise
-        )
+        result = detect_circle_quickly(img, hough, strong_denoise=strong_denoise)
         if not result:
             continue
         if not best_result:
@@ -249,7 +253,7 @@ def initial_align(img: Image, shift: Vector[float]) -> Image:
     aligned = cv2.warpAffine(
         img.rgb,
         M,
-        img.col_row,
+        img.widthXheight,
         flags=cv2.INTER_LANCZOS4,
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=0,
@@ -259,15 +263,15 @@ def initial_align(img: Image, shift: Vector[float]) -> Image:
 
 
 def advanced_align(
-    img: Image, reference_img: Image, reference_circle: Circle, shift: Vector[float]
+    img: Image, ref_img: Image, ref_circle: Circle, shift: Vector[float]
 ) -> Image | None:
-    roi_size = max(64, min(160, int(reference_circle.radius * 0.18)))
+    roi_size = max(64, min(160, int(ref_circle.radius * 0.18)))
     max_refine_delta_px = 6.0
     t_refine = time.time()
     M2x3, score, n_inliers = refine_alignment_multi_roi(
-        reference_img.gray,
-        img.gray,
-        reference_circle,
+        img,
+        ref_img,
+        ref_circle,
         n_rois=16,
         roi_size=roi_size,
         search=12,
@@ -298,7 +302,7 @@ def advanced_align(
     aliged_rbg = cv2.warpAffine(
         img.rgb,
         M2x3,
-        img.col_row,
+        img.widthXheight,
         flags=cv2.INTER_LANCZOS4,
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=0,
@@ -308,15 +312,15 @@ def advanced_align(
 
 def mask_phase_align(
     img: Image,
-    reference_img: Image,
-    reference_circle: Circle,
+    ref_img: Image,
+    ref_circle: Circle,
 ) -> Image | None:
 
     # 未启用高级：遮罩相位相关微调
     shift = masked_phase_corr(
-        reference_img.gray,
-        img.gray,
-        reference_circle,
+        img,
+        ref_img,
+        ref_circle,
     )
     if abs(shift.x) <= 1e-3 and abs(shift.y) <= 1e-3:
         return None
@@ -325,7 +329,7 @@ def mask_phase_align(
     aligned_rgb = cv2.warpAffine(
         img.rgb,
         M2,
-        img.col_row,
+        img.widthXheight,
         flags=cv2.INTER_LANCZOS4,
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=0,
@@ -338,27 +342,24 @@ def mask_phase_align(
 def align(
     img: Image,
     circle: Circle,
-    reference_img: Image,
-    reference_circle: Circle,
+    ref_img: Image,
+    ref_circle: Circle,
     use_advanced_alignment: bool,
 ) -> Image:
-    shift = reference_circle - circle
+    shift = ref_circle - circle
     initial_aligned = initial_align(img, shift)
 
     if use_advanced_alignment:
         aligned = advanced_align(
             img,
-            reference_img,
-            reference_circle,
+            ref_img,
+            ref_circle,
             shift,
         )
         if aligned:
             return aligned
 
-    return (
-        mask_phase_align(initial_aligned, reference_img, reference_circle)
-        or initial_aligned
-    )
+    return mask_phase_align(initial_aligned, ref_img, ref_circle) or initial_aligned
 
 
 def process_single_image(
@@ -376,9 +377,8 @@ def process_single_image(
     input_image = input_file.image
     if input_image is None:
         return None
-    input_bgr = input_image.bgr
     result = detect_circle(
-        input_bgr,
+        input_image,
         hough,
         strong_denoise=strong_denoise,
         prev_circle=last_circle,

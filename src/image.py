@@ -17,8 +17,9 @@ class Image:
     _bgr: NDArray | None = None
     exif: PILImage.Exif | None
     icc: bytes | None
-    _gray: NDArray | None = None
-    _col_row: tuple[int, int]
+    _normalized_gray: NDArray | None = None
+    _width: int
+    _height: int
 
     def __init__(
         self,
@@ -33,8 +34,7 @@ class Image:
             self.rgb = rgb
         elif bgr is not None:
             self.rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            row, col = self.rgb.shape[:2]
-            self._col_row = (col, row)
+            self._height, self._width = bgr.shape[:2]
         else:
             raise ValueError("必须提供 rgb 或 bgr 数据")
         self.exif = exif
@@ -79,16 +79,29 @@ class Image:
         return self._bgr
 
     @property
-    def gray(self) -> NDArray:
+    def normalized_gray(self) -> NDArray:
         """获取灰度图像数据"""
-        if self._gray is None:
-            self._gray = cv2.cvtColor(self.rgb, cv2.COLOR_RGB2GRAY)
-        return self._gray
+        if self._normalized_gray is None:
+            gray = cv2.cvtColor(self.rgb, cv2.COLOR_RGB2GRAY)
+            self._normalized_gray = cv2.normalize(
+                gray.astype(np.float32), None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U
+            )
+        return self._normalized_gray
 
     @property
-    def col_row(self) -> tuple[int, int]:
+    def width(self) -> int:
+        """获取图像宽度"""
+        return self._width
+
+    @property
+    def height(self) -> int:
+        """获取图像高度"""
+        return self._height
+
+    @property
+    def widthXheight(self) -> tuple[int, int]:
         """获取图像的高度和宽度"""
-        return self._col_row
+        return self._width, self._height
 
 
 class ImageFile:

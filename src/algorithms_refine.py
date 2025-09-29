@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import math
 import time
+from image import Image
 from utils import ROI, Circle, Position, Vector, VectorArray
 from numpy.typing import NDArray
 
@@ -28,13 +29,9 @@ def _soft_disk_mask(h, w, circle: Circle, inner=0.0, outer=0.98) -> NDArray:
 
 
 def _clahe_and_bandpass(gray: np.ndarray):
-    g = gray.copy()
-    # Ensure 8-bit input
-    if g.dtype != np.uint8:
-        cv2.normalize(g.astype(np.float32), g, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
     # Local contrast to suppress global illumination, emphasize small-scale details
-    cla = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(g)
+    cla = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
 
     # High-pass only (remove mid/low frequencies): unsharp mask
     hp = cv2.subtract(
@@ -202,8 +199,8 @@ def _select_rois(
 
 
 def refine_alignment_multi_roi(
-    ref_gray: NDArray,
-    tgt_gray: NDArray,
+    img: Image,
+    ref_img: Image,
     circle: Circle,
     n_rois=16,
     roi_size=128,
@@ -224,28 +221,20 @@ def refine_alignment_multi_roi(
       • 内置时间预算，个别困难帧自动提前结束并回退上层策略
       • 过滤过暗/低纹理 ROI，提升稳健性
     """
-    H, W = ref_gray.shape
+
     logging.debug(
-        f"[Refine] HxW={H}x{W}, r≈{circle.radius:.1f}, n_rois={n_rois}, roi_init={roi_size}, search={search}"
+        f"[Refine] HxW={ref_img.height}x{ref_img.width}, r≈{circle.radius:.1f}, n_rois={n_rois}, roi_init={roi_size}, search={search}"
     )
     logging.debug(f"[Refine] 启用自适应ROI与亮度门控: brightness∈[30,220]")
 
     # 软盘遮罩，仅保留月盘内纹理
-    mask = _soft_disk_mask(H, W, circle, inner=0.0, outer=0.97)
+    mask = _soft_disk_mask(ref_img.height, ref_img.width, circle, inner=0.0, outer=0.97)
 
     # 归一化转为8-bit，用于能量图和ROI选择
-    # ref_gray = ref_gray.copy()
-    if ref_gray.dtype != np.uint8:
-        cv2.normalize(ref_gray.astype(np.float32), ref_gray, 0, 255, cv2.NORM_MINMAX)
-        ref_gray = ref_gray.astype(np.uint8)
-    # tgt_gray = tgt_gray.copy()
-    if tgt_gray.dtype != np.uint8:
-        cv2.normalize(tgt_gray.astype(np.float32), tgt_gray, 0, 255, cv2.NORM_MINMAX)
-        tgt_gray = tgt_gray.astype(np.uint8)
 
     # 梯度/DoG 预处理（抗亮度变化），用于匹配阶段
-    refF = _clahe_and_bandpass(ref_gray)
-    tgtF = _clahe_and_bandpass(tgt_gray)
+    refF = _clahe_and_bandpass(ref_img.normalized_gray)
+    tgtF = _clahe_and_bandpass(img.normalized_gray)
 
     # 只保留盘内
     refF = (refF.astype(np.float32) * mask).astype(np.uint8)
@@ -260,7 +249,12 @@ def refine_alignment_multi_roi(
     search = int(np.clip(search if search else (circle.radius * 0.05), 6, 18))
 
     rois: list[ROI] = _select_rois(
-        energy, mask, circle.radius, k=n_rois, box=roi_size, ref_img=ref_gray
+        energy,
+        mask,
+        circle.radius,
+        k=n_rois,
+        box=roi_size,
+        ref_img=ref_img.normalized_gray,
     )
     logging.debug(f"[Refine] ROI候选数={len(rois)}")
 
@@ -295,7 +289,9 @@ def refine_alignment_multi_roi(
             continue
 
         bmin, bmax = 30, 220
-        ref_block8 = ref_gray[roi.y : roi.y + roi.h, roi.x : roi.x + roi.w]
+        ref_block8 = ref_img.normalized_gray[
+            roi.y : roi.y + roi.h, roi.x : roi.x + roi.w
+        ]
         mask_patch = ((ref_block8 >= bmin) & (ref_block8 <= bmax)).astype(
             np.uint8
         ) * 255
