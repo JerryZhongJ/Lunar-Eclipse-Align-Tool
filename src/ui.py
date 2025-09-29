@@ -35,9 +35,8 @@ from PySide6.QtCore import (
 
 # 导入工具函数
 from utils import (
-    SYSTEM,
-    DEFAULT_DEBUG_MODE,
     SUPPORTED_EXTS,
+    SYSTEM,
     Hough,
 )
 
@@ -94,7 +93,7 @@ class AlignmentThread(QThread):
                 self.in_path,
                 self.out_path,
                 self.hough,
-                progress_callback,
+                # progress_callback,
                 self.ref_path,
                 self.use_advanced,
                 self.method,
@@ -400,7 +399,7 @@ class UniversalLunarAlignApp(QMainWindow):
 
     def _on_param_changed(self, key, value, companion_widget):
         """参数改变时的处理"""
-        self.params[key] = value
+        setattr(self.params, key, value)
 
         # 阻止循环更新
         companion_widget.blockSignals(True)
@@ -434,7 +433,9 @@ class UniversalLunarAlignApp(QMainWindow):
 
     def select_reference_image(self):
         """选择参考图像"""
-        initial_dir = self.input_path if self.input_path.is_dir() else Path()
+        initial_dir = (
+            self.input_path if self.input_path and self.input_path.is_dir() else Path()
+        )
         file_filter = f"支持的图像 ( {' '.join(SUPPORTED_EXTS)} );;所有文件 (*.*)"
 
         file_path, _ = QFileDialog.getOpenFileName(

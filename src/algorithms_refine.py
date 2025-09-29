@@ -213,10 +213,8 @@ def refine_alignment_multi_roi(
     min_inliers=6,
     min_mean_zncc=0.55,
     use_phasecorr=True,
-    use_ecc=False,
     time_budget_sec=1.2,
-    debug_cb=None,
-) -> tuple[NDArray[np.float32], float, int, float]:
+) -> tuple[NDArray[np.float32], float, int]:
     """
     输入：已做圆心粗配准的 ref_gray / tgt_gray，以及参考圆心(cx,cy)与半径 r
     输出：(M2x3, score, n_inliers, theta_deg)
@@ -375,7 +373,7 @@ def refine_alignment_multi_roi(
             th = base_shift
             M_h = np.array([[1.0, 0.0, th.x], [0.0, 1.0, th.y]], dtype=np.float32)
             logging.debug(f"[Refine] ROI不足，回退霍夫: shift=({th.x:.2f},{th.y:.2f})")
-            return M_h, 0.0, 0, 0.0
+            return M_h, 0.0, 0
         raise Exception()
 
     w_arr = np.asarray(weights, dtype=np.float64)
@@ -413,7 +411,7 @@ def refine_alignment_multi_roi(
             th = base_shift
             M_h = np.array([[1.0, 0.0, th.x], [0.0, 1.0, th.y]], dtype=np.float32)
             logging.debug(f"[Refine] IRLS失败，回退霍夫: shift=({th.x:.2f},{th.y:.2f})")
-            return M_h, 0.0, 0, 0.0
+            return M_h, 0.0, 0
         raise Exception()
 
     t = Vector.from_ndarray(np.average(d_arr._arr, axis=0, weights=ww), float)
@@ -449,8 +447,7 @@ def refine_alignment_multi_roi(
     # 最终 2x3 仿射矩阵（仅平移）
     M = np.array([[1.0, 0.0, t.x], [0.0, 1.0, t.y]], dtype=np.float32)
 
-    theta_deg = 0.0
     logging.debug(
         f"[Refine] 内点={cnt}/{n}, 平移=({t.x:.2f},{t.y:.2f}), meanZNCC={mean_zncc:.2f}, score={score:.3f}"
     )
-    return M, score, int(cnt), theta_deg
+    return M, score, int(cnt)

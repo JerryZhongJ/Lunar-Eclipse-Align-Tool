@@ -4,44 +4,64 @@ PySide6版本的窗口类
 包含调试窗口、预览窗口、进度窗口等
 """
 import os
+from pathlib import Path
 import threading
 import queue
 import numpy as np
 from typing import TYPE_CHECKING
 
+from image import ImageFile
 from ui import UniversalLunarAlignApp
+
 if TYPE_CHECKING:
     from ui import UniversalLunarAlignApp
 
 from PySide6.QtWidgets import (
-    QDialog, QWidget, QVBoxLayout, QHBoxLayout, 
-    QLabel,  QPushButton, QSpinBox, QSlider, QCheckBox,
-QProgressBar, QFileDialog, QMessageBox,
-
-    QGraphicsView, QGraphicsScene,
-    QApplication
+    QDialog,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSpinBox,
+    QSlider,
+    QCheckBox,
+    QProgressBar,
+    QFileDialog,
+    QMessageBox,
+    QGraphicsView,
+    QGraphicsScene,
+    QApplication,
 )
 from PySide6.QtCore import (
-    Qt, QTimer, 
-
+    Qt,
+    QTimer,
 )
 from PySide6.QtGui import (
-    QFont, QPixmap, QImage, QColor, QPen, QBrush,
+    QFont,
+    QPixmap,
+    QImage,
+    QColor,
+    QPen,
+    QBrush,
 )
 
 
 import cv2
 
 # 导入工具函数
-from utils import ( SUPPORTED_EXTS
-    imread_unicode, to_display_rgb, force_garbage_collection, log
+from utils import (
+    SUPPORTED_EXTS,
+    Hough,
+    to_display_rgb,
 )
-import algorithms_circle as _algo_circle
+import circle_detection as _algo_circle
+
 
 class DebugWindow(QDialog):
     """调试窗口：可选择样张并实时调节参数"""
 
-    def __init__(self, app_controller:UniversalLunarAlignApp):
+    def __init__(self, app_controller: UniversalLunarAlignApp):
         super().__init__(app_controller)
         self.app: UniversalLunarAlignApp = app_controller
         self.setWindowTitle("调试窗口（参数实时预览）")
@@ -50,11 +70,9 @@ class DebugWindow(QDialog):
 
         # 图像数据
         self.preview_img_cv = None
-        self.preview_rgb = None
-        self.preview_base_rgb = None
         self.preview_gray_rgb = None
         self.preview_scale = 1.0
-        self.current_path = None
+        self.current_path: Path | None = None
 
         # 调试计算控制
         self._dbg_queue = queue.Queue()
@@ -66,12 +84,14 @@ class DebugWindow(QDialog):
         self._last_det = None
 
         # 参数变量
-        self.min_r = 300
-        self.max_r = 800
-        self.param1 = 50
-        self.param2 = 30
-        self.show_mask = False
-        self.enable_debug = False
+        self.hough = Hough(
+            minRadius=300,
+            maxRadius=800,
+            param1=50,
+            param2=30,
+        )
+
+        self.show_mask: bool = False
 
         self._setup_ui()
         self._center_window()
@@ -141,11 +161,6 @@ class DebugWindow(QDialog):
         self.show_mask_check.stateChanged.connect(self.on_show_mask_changed)
         toolbar2_layout.addWidget(self.show_mask_check)
 
-        self.enable_debug_check = QCheckBox("启用调试输出")
-        self.enable_debug_check.setChecked(self.enable_debug)
-        self.enable_debug_check.stateChanged.connect(self.on_enable_debug_changed)
-        toolbar2_layout.addWidget(self.enable_debug_check)
-
         layout.addWidget(toolbar2)
 
         # 图像显示区域
@@ -154,12 +169,6 @@ class DebugWindow(QDialog):
         self.graphics_view.setScene(self.graphics_scene)
         self.graphics_view.setBackgroundBrush(QBrush(QColor(34, 34, 34)))
         layout.addWidget(self.graphics_view)
-
-        # 连接参数变化信号
-        self.min_r_spin.valueChanged.connect(self._schedule_debug_compute)
-        self.max_r_spin.valueChanged.connect(self._schedule_debug_compute)
-        self.param1_spin.valueChanged.connect(self._schedule_debug_compute)
-        self.param2_spin.valueChanged.connect(self._schedule_debug_compute)
 
     def on_param_changed(self, value):
         """参数改变"""
@@ -174,69 +183,59 @@ class DebugWindow(QDialog):
         self.show_mask = state == Qt.CheckState.Checked.value
         self.refresh()
 
-    def on_enable_debug_changed(self, state):
-        """启用调试输出状态改变"""
-        self.enable_debug = state == Qt.CheckState.Checked.value
-        self._sync_debug_back()
-        self.refresh()
-
     def choose_image(self):
+        input_path = self.app.input_path
         """选择样张图像"""
-        initial_dir = self.app.input_path if os.path.isdir(self.app.input_path) else os.getcwd()
+        initial_dir = input_path if input_path and input_path.is_dir() else os.getcwd()
         file_filter = f"支持的图像 ( {' '.join(SUPPORTED_EXTS)} );;所有文件 (*.*)"
 
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择调试样张", initial_dir, file_filter
+            self, "选择调试样张", str(initial_dir), file_filter
         )
 
         if file_path:
-            self.current_path = normalize_path(file_path)
-            img = imread_unicode(self.current_path, cv2.IMREAD_UNCHANGED)
+            self.current_path = Path(file_path)
+            img = ImageFile(self.current_path).image
             if img is None:
                 QMessageBox.critical(self, "错误", "无法读取该图像。")
                 return
 
-            self.preview_img_cv = img
-            self.preview_rgb = to_display_rgb(img)
-            self.preview_base_rgb = self.preview_rgb.copy()
+            # self.preview_img_cv = img
+
+            self.preview_rgb = img.rgb
 
             # 生成灰度版
             try:
-                if img.ndim == 3:
-                    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                if self.preview_rgb.ndim == 3:
+                    gray = cv2.cvtColor(self.preview_rgb, cv2.COLOR_BGR2GRAY)
                 else:
-                    g = img.copy()
-                g_bgr = cv2.cvtColor(g, cv2.COLOR_GRAY2BGR)
-                self.preview_gray_rgb = to_display_rgb(g_bgr)
+                    gray = self.preview_rgb
+                self.preview_gray_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
             except Exception:
-                self.preview_gray_rgb = self.preview_base_rgb.copy()
+                self.preview_gray_rgb = self.preview_rgb
 
             # 设置回主界面
-            self.app.debug_image_path = self.current_path
-            self.enable_debug = True
-            self.enable_debug_check.setChecked(True)
-            self._sync_debug_back()
             self.refresh()
-            self._schedule_debug_compute()
-
-    def _sync_debug_back(self):
-        """同步调试设置回主界面"""
-        if hasattr(self.app, 'debug_mode'):
-            self.app.debug_mode = self.enable_debug
 
     def refresh(self):
         """刷新显示"""
         self.graphics_scene.clear()
 
         # 选择底图
-        if self.show_mask or self.enable_debug:
-            src_rgb = self.preview_gray_rgb if self.preview_gray_rgb is not None else self.preview_base_rgb
+        if self.show_mask:
+            src_rgb = (
+                self.preview_gray_rgb
+                if self.preview_gray_rgb is not None
+                else self.preview_rgb
+            )
         else:
-            src_rgb = self.preview_base_rgb
+            src_rgb = self.preview_rgb
 
         if src_rgb is None:
             # 显示提示文字
-            self.graphics_scene.addText("请选择一张样张…").setDefaultTextColor("lightgray")
+            self.graphics_scene.addText("请选择一张样张…").setDefaultTextColor(
+                "lightgray"
+            )
             return
 
         # 复制底图
@@ -245,8 +244,11 @@ class DebugWindow(QDialog):
         # 如果显示分析区域
         if self.show_mask and self.preview_img_cv is not None:
             try:
-                gray = (cv2.cvtColor(self.preview_img_cv, cv2.COLOR_BGR2GRAY)
-                        if self.preview_img_cv.ndim == 3 else self.preview_img_cv)
+                gray = (
+                    cv2.cvtColor(self.preview_img_cv, cv2.COLOR_BGR2GRAY)
+                    if self.preview_img_cv.ndim == 3
+                    else self.preview_img_cv
+                )
 
                 # 构建分析掩膜
                 mask = self._build_analysis_mask(gray)
@@ -264,7 +266,9 @@ class DebugWindow(QDialog):
                     alpha = (mask.astype(np.float32) / 255.0) * 0.35
                     alpha = alpha[:, :, np.newaxis]
 
-                    display_rgb = (display_rgb * (1 - alpha) + red_overlay * alpha).astype(np.uint8)
+                    display_rgb = (
+                        display_rgb * (1 - alpha) + red_overlay * alpha
+                    ).astype(np.uint8)
 
             except Exception as e:
                 print(f"显示分析区域失败: {e}")
@@ -272,14 +276,12 @@ class DebugWindow(QDialog):
         # 显示图像
         self._display_image(display_rgb)
 
-        # 如果未启用调试，显示提示
-        if not self.enable_debug:
-            self.graphics_scene.addText("调试未启用（仅显示原图）").setDefaultTextColor("lightgray")
-            return
-          
-
         # 叠加检测结果
-        if self._last_det and isinstance(self._last_det, dict) and self._last_det.get('circle') is not None:
+        if (
+            self._last_det
+            and isinstance(self._last_det, dict)
+            and self._last_det.get("circle") is not None
+        ):
             self._draw_detection_result(self._last_det)
 
     def _build_analysis_mask(self, gray):
@@ -287,19 +289,21 @@ class DebugWindow(QDialog):
         try:
             # 尝试使用ui版本的掩膜构建
             try:
-                return _algo_circle.build_analysis_mask_ui(gray, brightness_min=3/255.0)
+                return _algo_circle.build_analysis_mask_ui(
+                    gray, brightness_min=3 / 255.0
+                )
             except AttributeError:
                 pass
 
             # 尝试新签名
             try:
-                return _algo_circle.build_analysis_mask(gray, brightness_min=3/255.0)
+                return _algo_circle.build_analysis_mask(gray, brightness_min=3 / 255.0)
             except TypeError:
                 # 旧签名
                 return _algo_circle.build_analysis_mask(gray)
         except Exception:
             # 回退：返回零掩膜
-            return np.zeros_like(gray, dtype='uint8')
+            return np.zeros_like(gray, dtype="uint8")
 
     def _display_image(self, rgb):
         """显示图像"""
@@ -316,7 +320,12 @@ class DebugWindow(QDialog):
 
         # 缩放
         if scale < 1.0:
-            pixmap = pixmap.scaled(int(w * scale), int(h * scale), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            pixmap = pixmap.scaled(
+                int(w * scale),
+                int(h * scale),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
 
         # 添加到场景
         pixmap_item = self.graphics_scene.addPixmap(pixmap)
@@ -325,7 +334,7 @@ class DebugWindow(QDialog):
     def _draw_detection_result(self, det):
         """绘制检测结果"""
         try:
-            cx, cy, r = det['circle']
+            cx, cy, r = det["circle"]
 
             # 处理缩放
             scale = self.preview_scale
@@ -335,37 +344,31 @@ class DebugWindow(QDialog):
 
             # 画圆
             circle = self.graphics_scene.addEllipse(
-                cx - r, cy - r, 2 * r, 2 * r,
-                QPen(QColor(255, 77, 79), 2)
+                cx - r, cy - r, 2 * r, 2 * r, QPen(QColor(255, 77, 79), 2)
             )
 
             # 画圆心
             center = self.graphics_scene.addEllipse(
-                cx - 3, cy - 3, 6, 6,
+                cx - 3,
+                cy - 3,
+                6,
+                6,
                 QPen(Qt.PenStyle.NoPen),
-                QBrush(QColor(255, 77, 79))
+                QBrush(QColor(255, 77, 79)),
             )
 
             # 显示状态文本
-            quality = det.get('quality', None)
+            quality = det.get("quality", None)
             status_text = f"检测到圆 r≈{r:.1f}px"
             if quality is not None:
                 status_text += f"  quality={quality:.2f}"
 
-            text = self.graphics_scene.addText(
-                status_text
-            )
+            text = self.graphics_scene.addText(status_text)
             text.setFont(QFont("Arial", 12))
             text.setDefaultTextColor("lightgray")
 
         except Exception as e:
             print(f"绘制检测结果失败: {e}")
-
-    def _schedule_debug_compute(self):
-        """调度调试计算"""
-        self._dbg_pending = True
-        if not self._dbg_busy and self.preview_img_cv is not None and self.enable_debug:
-            self._start_debug_compute()
 
     def _start_debug_compute(self):
         """开始调试计算"""
@@ -426,10 +429,6 @@ class DebugWindow(QDialog):
         except queue.Empty:
             pass
 
-        # 如果有新任务，继续计算
-        if (not self._dbg_busy) and self._dbg_pending and self.preview_img_cv is not None and self.enable_debug:
-            self._start_debug_compute()
-
         # 继续轮询
         QTimer.singleShot(40, self._poll_debug_results)
 
@@ -437,7 +436,7 @@ class DebugWindow(QDialog):
 class PreviewWindow(QDialog):
     """预览窗口"""
 
-    def __init__(self, app_controller:UniversalLunarAlignApp):
+    def __init__(self, app_controller: UniversalLunarAlignApp):
         super().__init__(app_controller)
         self.app: UniversalLunarAlignApp = app_controller
         self.setWindowTitle("预览与半径估计")
@@ -497,49 +496,61 @@ class PreviewWindow(QDialog):
         # 连接信号
         self.choose_image_btn.clicked.connect(self.choose_image)
 
-
     def choose_image(self):
         """选择预览图像"""
-        initial_dir = self.app.input_path if os.path.isdir(self.app.input_path) else os.getcwd()
+        input_path = self.app.input_path
+        initial_dir = (
+            self.app.input_path if input_path and input_path.is_dir() else Path()
+        )
         file_filter = f"支持的图像 ( {' '.join(SUPPORTED_EXTS)} );;所有文件 (*.*)"
 
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择样张用于预览与框选", initial_dir, file_filter
+            self, "选择样张用于预览与框选", str(initial_dir), file_filter
         )
 
         if file_path:
-            self.current_path = normalize_path(file_path)
-            img = imread_unicode(self.current_path, cv2.IMREAD_UNCHANGED)
+            self.current_path = Path(file_path)
+            img = ImageFile(self.current_path).image
             if img is None:
                 QMessageBox.critical(self, "错误", "无法读取该图像。")
                 return
 
-            self.preview_img_bgr = img
-            self.preview_img_rgb = to_display_rgb(img)
-            self.setWindowTitle(f"预览与半径估计 - {os.path.basename(self.current_path)}")
+            self.preview_img_rgb = img.rgb
+            self.setWindowTitle(
+                f"预览与半径估计 - {os.path.basename(self.current_path)}"
+            )
             self._display_image()
 
     def _display_image(self):
         """显示图像"""
-        if not hasattr(self, 'preview_img_rgb') or self.preview_img_rgb is None:
+        if not hasattr(self, "preview_img_rgb") or self.preview_img_rgb is None:
             # 显示提示
             self.graphics_scene.clear()
-            text = self.graphics_scene.addText(
-                "请选择样张，在图上拖拽鼠标框选月亮"
-            )
+            text = self.graphics_scene.addText("请选择样张，在图上拖拽鼠标框选月亮")
             text.setDefaultTextColor("lightgray")
             return
 
         # 转换为QPixmap
         h, w = self.preview_img_rgb.shape[:2]
-        q_img = QImage(self.preview_img_rgb.data, w, h, self.preview_img_rgb.strides[0], QImage.Format.Format_RGB888)
+        q_img = QImage(
+            self.preview_img_rgb.data,
+            w,
+            h,
+            self.preview_img_rgb.strides[0],
+            QImage.Format.Format_RGB888,
+        )
         pixmap = QPixmap.fromImage(q_img)
 
         # 计算缩放
         view_size = self.graphics_view.size()
         scale = min(view_size.width() / w, view_size.height() / h, 1.0)
         if scale < 1.0:
-            pixmap = pixmap.scaled(int(w * scale), int(h * scale), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            pixmap = pixmap.scaled(
+                int(w * scale),
+                int(h * scale),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
 
         # 添加到场景
         self.graphics_scene.clear()

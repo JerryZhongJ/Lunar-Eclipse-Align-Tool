@@ -8,7 +8,7 @@ import numpy as np
 import cv2
 from numpy._typing._array_like import NDArray
 
-from utils import Circle, Hough, PositionArray, Vector, VectorArray
+from utils import Circle, DetectionResult, Hough, PositionArray, Vector, VectorArray
 from skimage.measure import CircleModel, ransac
 
 
@@ -348,7 +348,7 @@ def _setup_detection_environment(
 
 
 # ------------------ ROI构建 ------------------
-def _build_detection_roi(
+def build_detection_roi(
     proc_for_hough: NDArray,
     processed_det: NDArray,
     hough: Hough,
@@ -498,7 +498,7 @@ def robust_ransac_detection(
 
 
 # ------------------ 标准霍夫检测 ------------------
-def standard_hough_detection(
+def standard_hough_detect(
     proc_for_hough: NDArray, hough: Hough, height: int
 ) -> list[Circle]:
     """
@@ -533,7 +533,7 @@ def standard_hough_detection(
 
 
 # ------------------ 自适应霍夫检测 ------------------
-def adaptive_hough_detection(
+def adaptive_hough_detect(
     proc_for_hough: NDArray,
     hough: Hough,
     brightness_mode: BrightnessMode,
@@ -593,7 +593,7 @@ def adaptive_hough_detection(
 
 
 # ------------------ 轮廓检测 ------------------
-def contour_detection(processed_det: NDArray, hough: Hough) -> list[Circle]:
+def contour_detect(processed_det: NDArray, hough: Hough) -> list[Circle]:
     """
     尝试轮廓检测作为备选方案
 
@@ -628,7 +628,7 @@ def contour_detection(processed_det: NDArray, hough: Hough) -> list[Circle]:
 
 
 # ------------------ Padding 降级检测 ------------------
-def padding_fallback_detection(
+def padding_fallback_detect(
     processed_det: NDArray,
     hough: Hough,
 ) -> list[Circle]:
@@ -696,7 +696,7 @@ def padding_fallback_detection(
 
 
 # ------------------ 最终圆验证 ------------------
-def validate_final_circle(
+def final_detect(
     processed_det: NDArray,
     hough: Hough,
 ) -> list[Circle]:
@@ -738,12 +738,12 @@ def validate_final_circle(
     return circles
 
 
-def detect_circle_phd2_enhanced(
-    image: NDArray,
+def detect_circle(
+    bgr: NDArray,
     hough: Hough,
     strong_denoise=False,
     prev_circle: Circle | None = None,
-) -> tuple[Circle | None, float]:
+) -> DetectionResult | None:
     """
     主检测函数 - 重构后的协调器版本
 
@@ -755,7 +755,7 @@ def detect_circle_phd2_enhanced(
 
     # 1. 设置检测环境
     processed, processed_det, proc_for_hough, brightness_mode, H, W = (
-        _setup_detection_environment(image, strong_denoise)
+        _setup_detection_environment(bgr, strong_denoise)
     )
 
     def update_best(circles: list[Circle]) -> None:
@@ -767,7 +767,7 @@ def detect_circle_phd2_enhanced(
                 best_score = score
 
     # 2. 构建检测ROI
-    proc_for_hough, circles = _build_detection_roi(
+    proc_for_hough, circles = build_detection_roi(
         proc_for_hough,
         processed_det,
         hough,
@@ -788,15 +788,15 @@ def detect_circle_phd2_enhanced(
     #         return best_circle, processed, best_score
 
     # 5. 尝试标准霍夫检测
-    update_best(standard_hough_detection(proc_for_hough, hough, H))
+    update_best(standard_hough_detect(proc_for_hough, hough, H))
 
     # 6. 尝试自适应霍夫检测
     if best_score < 15:
-        update_best(adaptive_hough_detection(proc_for_hough, hough, brightness_mode, H))
+        update_best(adaptive_hough_detect(proc_for_hough, hough, brightness_mode, H))
 
     # —— 轮廓备选 —— #
     if best_score < 10:
-        update_best(contour_detection(processed_det, hough))
+        update_best(contour_detect(processed_det, hough))
 
     # —— padding-based fallback —— #
     # if time.time() - t0 > TIME_BUDGET:
@@ -812,10 +812,11 @@ def detect_circle_phd2_enhanced(
         or (best_score < 10)
         or touches_border(best_circle, Vector(W, H))
     ):
-        update_best(padding_fallback_detection(processed_det, hough))
+        update_best(padding_fallback_detect(processed_det, hough))
 
     if best_circle and not (hough.minRadius <= best_circle.radius <= hough.maxRadius):
         # —— 最终半径窗口一致性检查（严格遵守 UI 设定） —— #
-        update_best(validate_final_circle(processed_det, hough))
-
-    return best_circle, best_score
+        update_best(final_detect(processed_det, hough))
+    if not best_circle:
+        return None
+    return DetectionResult(best_circle, best_score)
