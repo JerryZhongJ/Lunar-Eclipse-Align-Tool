@@ -8,6 +8,7 @@ import cv2, numpy as np
 
 from image import Image, ImageFile
 from utils import (
+    MAX_REFINE_DELTA_PX,
     MAX_SCAN_COUNT,
     MAX_SIDE,
     DetectionResult,
@@ -21,7 +22,7 @@ from circle_detection import Circle, detect_circle, masked_phase_corr
 from version import VERSION
 
 
-from algorithms_refine import refine_alignment_multi_roi
+from algorithms_refine import align_with_multi_roi
 from numpy.typing import NDArray
 
 
@@ -149,7 +150,7 @@ def detect_circle_quickly(
 
 
 # ------------------ 参考图像选择 ------------------
-def _load_user_reference(
+def load_user_reference(
     reference_file: ImageFile, hough: Hough, strong_denoise: bool = False
 ) -> DetectionResult | None:
 
@@ -222,7 +223,7 @@ def get_reference(
     logging.info("阶段 1/2: 确定参考图像...")
     if reference_path and reference_path in input_files:
         reference_file = input_files[reference_path]
-        result = _load_user_reference(reference_file, hough, strong_denoise)
+        result = load_user_reference(reference_file, hough, strong_denoise)
         if result:
             return result.circle, reference_file
     return auto_select_reference(
@@ -232,7 +233,6 @@ def get_reference(
     )
 
 
-# ------------------ 单图像处理 ------------------
 def initial_align(img: Image, shift: Vector[float]) -> Image:
     """
     应用初始圆心对齐
@@ -263,12 +263,11 @@ def initial_align(img: Image, shift: Vector[float]) -> Image:
 
 
 def advanced_align(
-    img: Image, ref_img: Image, ref_circle: Circle, shift: Vector[float]
+    img: Image, ref_img: Image, ref_circle: Circle, base_shift: Vector[float]
 ) -> Image | None:
     roi_size = max(64, min(160, int(ref_circle.radius * 0.18)))
-    max_refine_delta_px = 6.0
-    t_refine = time.time()
-    M2x3, score, n_inliers = refine_alignment_multi_roi(
+
+    shift = align_with_multi_roi(
         img,
         ref_img,
         ref_circle,
@@ -276,32 +275,26 @@ def advanced_align(
         roi_size=roi_size,
         search=12,
         use_phasecorr=True,
-        base_shift=shift,
-        max_refine_delta_px=max_refine_delta_px,
     )
-    dt_refine = time.time() - t_refine
+    if not shift:
+        shift = base_shift
+    elif (shift - base_shift).norm() > MAX_REFINE_DELTA_PX:
+        shift = base_shift
 
-    roi_used = roi_size
-    logging.info(
-        f"    [Refine] score={score:.3f}, inliers={n_inliers}, roi_init≈{roi_used}, t={dt_refine:.2f}s"
-    )
+    M = np.array([[1.0, 0.0, shift.x], [0.0, 1.0, shift.y]], dtype=np.float32)
 
-    t = Vector(float(M2x3[0, 2]), float(M2x3[1, 2]))
-
-    residual = t.norm()
+    residual = shift.norm()
     logging.info(f"    [Refine] 残差=Δ{residual:.2f}px")
-    if residual > max_refine_delta_px:
+    if residual > MAX_REFINE_DELTA_PX:
         logging.warning(
-            f"    [Refine] 残差过大(Δ={residual:.2f}px > {max_refine_delta_px:.1f}px)，放弃精配准并保持霍夫平移"
+            f"    [Refine] 残差过大(Δ={residual:.2f}px > {MAX_REFINE_DELTA_PX:.1f}px)，放弃精配准并保持霍夫平移"
         )
         return None
 
-    logging.info(
-        f"Multi-ROI refine (仅平移, inliers={n_inliers}, roi_init≈{roi_used}, Δ={residual:.2f}px, gate≤{max_refine_delta_px:.0f}px, {dt_refine:.2f}s)"
-    )
+    logging.info(f"Multi-ROI refine (仅平移)")
     aliged_rbg = cv2.warpAffine(
         img.rgb,
-        M2x3,
+        M,
         img.widthXheight,
         flags=cv2.INTER_LANCZOS4,
         borderMode=cv2.BORDER_CONSTANT,
@@ -325,10 +318,10 @@ def mask_phase_align(
     if abs(shift.x) <= 1e-3 and abs(shift.y) <= 1e-3:
         return None
 
-    M2 = np.array([[1, 0, shift.x], [0, 1, shift.y]], dtype=np.float32)
+    M = np.array([[1, 0, shift.x], [0, 1, shift.y]], dtype=np.float32)
     aligned_rgb = cv2.warpAffine(
         img.rgb,
-        M2,
+        M,
         img.widthXheight,
         flags=cv2.INTER_LANCZOS4,
         borderMode=cv2.BORDER_CONSTANT,
@@ -362,6 +355,7 @@ def align(
     return mask_phase_align(initial_aligned, ref_img, ref_circle) or initial_aligned
 
 
+# ------------------ 单图像处理 ------------------
 def process_single_image(
     input_file: ImageFile,
     output_dir: Path,
