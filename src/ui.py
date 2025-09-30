@@ -34,17 +34,15 @@ from PySide6.QtCore import (
 
 
 # 导入工具函数
+from pipeline import process_images
 from utils import (
     SUPPORTED_EXTS,
     SYSTEM,
-    Hough,
+    HoughParams,
 )
 
 # 导入算法模块
-from pipeline import align_moon_images_incremental
 
-
-from scipy.fft import fft2
 
 from version import VERSION
 
@@ -66,7 +64,7 @@ class AlignmentThread(QThread):
         self,
         in_path: Path,
         out_path: Path,
-        hough: Hough,
+        hough: HoughParams,
         ref_path: Path | None,
         use_advanced,
         method,
@@ -89,14 +87,13 @@ class AlignmentThread(QThread):
                 self.progress_signal.emit(pct, status)
 
             # 执行对齐处理
-            result = align_moon_images_incremental(
+            result = process_images(
                 self.in_path,
                 self.out_path,
                 self.hough,
                 # progress_callback,
                 self.ref_path,
                 self.use_advanced,
-                self.method,
                 self.strong_denoise,
             )
 
@@ -142,7 +139,7 @@ class UniversalLunarAlignApp(QMainWindow):
         self.reference_path: Path | None = None
 
         # 参数设置
-        self.params = Hough(minRadius=300, maxRadius=800, param1=50, param2=30)
+        self.params = HoughParams(minRadius=300, maxRadius=800, param1=50, param2=30)
 
         self.use_advanced_alignment = False
         self.alignment_method = "auto"

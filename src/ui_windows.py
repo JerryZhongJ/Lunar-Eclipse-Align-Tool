@@ -52,8 +52,7 @@ import cv2
 # 导入工具函数
 from utils import (
     SUPPORTED_EXTS,
-    Hough,
-    to_display_rgb,
+    HoughParams,
 )
 import circle_detection as _algo_circle
 
@@ -84,7 +83,7 @@ class DebugWindow(QDialog):
         self._last_det = None
 
         # 参数变量
-        self.hough = Hough(
+        self.hough = HoughParams(
             minRadius=300,
             maxRadius=800,
             param1=50,

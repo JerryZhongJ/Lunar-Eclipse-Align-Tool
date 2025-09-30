@@ -12,17 +12,17 @@ from utils import (
     MAX_SCAN_COUNT,
     MAX_SIDE,
     DetectionResult,
-    Hough,
-    Position,
+    HoughParams,
+    Point,
     Vector,
     get_memory_usage_mb,
 )
 
-from circle_detection import Circle, detect_circle, masked_phase_corr
+from circle_detection import Circle, detect_circle
 from version import VERSION
 
 
-from algorithms_refine import align_with_multi_roi
+from shift_detection import detect_refined_shift, make_multi_roi_shift
 from numpy.typing import NDArray
 
 
@@ -85,7 +85,7 @@ from numpy.typing import NDArray
 
 # ------------------ 缩略图辅助 ------------------
 def detect_circle_on_thumb(
-    img: Image, hough: Hough, scale: float, strong_denoise=False
+    img: Image, hough: HoughParams, scale: float, strong_denoise=False
 ) -> DetectionResult | None:
     """
     Returns:
@@ -106,7 +106,7 @@ def detect_circle_on_thumb(
         )
     )
 
-    small_hough = Hough(
+    small_hough = HoughParams(
         minRadius=max(1, int(hough.minRadius * scale)),
         maxRadius=max(
             2, int(hough.minRadius * scale) + 1, int(hough.maxRadius * scale)
@@ -130,7 +130,7 @@ def detect_circle_on_thumb(
 
 
 def detect_circle_quickly(
-    img: Image, hough: Hough, strong_denoise=False
+    img: Image, hough: HoughParams, strong_denoise=False
 ) -> DetectionResult | None:
 
     max_wh = max(img.height, img.width)
@@ -151,7 +151,7 @@ def detect_circle_quickly(
 
 # ------------------ 参考图像选择 ------------------
 def load_user_reference(
-    reference_file: ImageFile, hough: Hough, strong_denoise: bool = False
+    reference_file: ImageFile, hough: HoughParams, strong_denoise: bool = False
 ) -> DetectionResult | None:
 
     ref_img = reference_file.image
@@ -168,7 +168,7 @@ def load_user_reference(
 
 def auto_select_reference(
     input_files: Iterable[ImageFile],
-    hough: Hough,
+    hough: HoughParams,
     strong_denoise: bool = False,
 ) -> tuple[Circle, ImageFile] | None:
     """
@@ -217,7 +217,7 @@ def auto_select_reference(
 def get_reference(
     reference_path: Path | None,
     input_files: dict[Path, ImageFile],
-    hough: Hough,
+    hough: HoughParams,
     strong_denoise: bool,
 ) -> tuple[Circle, ImageFile] | None:
     logging.info("阶段 1/2: 确定参考图像...")
@@ -233,92 +233,9 @@ def get_reference(
     )
 
 
-def initial_align(img: Image, shift: Vector[float]) -> Image:
-    """
-    应用初始圆心对齐
-
-    Args:
-        bgr: 目标图像
-        circle: 目标图像的圆
-        reference_circle: 参考图像的圆
-
-    Returns:
-        tuple: (aligned_image, shift, confidence)
-    """
-
-    # 使用默认质量值
-
-    M = np.array([[1, 0, shift.x], [0, 1, shift.y]], dtype=np.float64)
-
-    aligned = cv2.warpAffine(
-        img.rgb,
-        M,
-        img.widthXheight,
-        flags=cv2.INTER_LANCZOS4,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=0,
-    )
-    logging.info(f"初始对齐: shift=({shift.x:.1f},{shift.y:.1f})")
-    return Image(rgb=aligned)
-
-
-def advanced_align(
-    img: Image, ref_img: Image, ref_circle: Circle, base_shift: Vector[float]
-) -> Image | None:
-    roi_size = max(64, min(160, int(ref_circle.radius * 0.18)))
-
-    shift = align_with_multi_roi(
-        img,
-        ref_img,
-        ref_circle,
-        n_rois=16,
-        roi_size=roi_size,
-        search=12,
-        use_phasecorr=True,
-    )
-    if not shift:
-        shift = base_shift
-    elif (shift - base_shift).norm() > MAX_REFINE_DELTA_PX:
-        shift = base_shift
-
-    M = np.array([[1.0, 0.0, shift.x], [0.0, 1.0, shift.y]], dtype=np.float32)
-
-    residual = shift.norm()
-    logging.info(f"    [Refine] 残差=Δ{residual:.2f}px")
-    if residual > MAX_REFINE_DELTA_PX:
-        logging.warning(
-            f"    [Refine] 残差过大(Δ={residual:.2f}px > {MAX_REFINE_DELTA_PX:.1f}px)，放弃精配准并保持霍夫平移"
-        )
-        return None
-
-    logging.info(f"Multi-ROI refine (仅平移)")
-    aliged_rbg = cv2.warpAffine(
-        img.rgb,
-        M,
-        img.widthXheight,
-        flags=cv2.INTER_LANCZOS4,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=0,
-    )
-    return Image(rgb=aliged_rbg)
-
-
-def mask_phase_align(
-    img: Image,
-    ref_img: Image,
-    ref_circle: Circle,
-) -> Image | None:
-
-    # 未启用高级：遮罩相位相关微调
-    shift = masked_phase_corr(
-        img,
-        ref_img,
-        ref_circle,
-    )
-    if abs(shift.x) <= 1e-3 and abs(shift.y) <= 1e-3:
-        return None
-
+def align(img: Image, shift: Vector[float]) -> Image:
     M = np.array([[1, 0, shift.x], [0, 1, shift.y]], dtype=np.float32)
+
     aligned_rgb = cv2.warpAffine(
         img.rgb,
         M,
@@ -327,32 +244,7 @@ def mask_phase_align(
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=0,
     )
-    logging.info(f"Masked PhaseCorr")
-
     return Image(rgb=aligned_rgb)
-
-
-def align(
-    img: Image,
-    circle: Circle,
-    ref_img: Image,
-    ref_circle: Circle,
-    use_advanced_alignment: bool,
-) -> Image:
-    shift = ref_circle - circle
-    initial_aligned = initial_align(img, shift)
-
-    if use_advanced_alignment:
-        aligned = advanced_align(
-            img,
-            ref_img,
-            ref_circle,
-            shift,
-        )
-        if aligned:
-            return aligned
-
-    return mask_phase_align(initial_aligned, ref_img, ref_circle) or initial_aligned
 
 
 # ------------------ 单图像处理 ------------------
@@ -361,7 +253,7 @@ def process_single_image(
     output_dir: Path,
     ref_image: Image,
     ref_circle: Circle,
-    hough: Hough,
+    hough: HoughParams,
     last_circle: Circle | None,
     use_advanced_alignment: bool = False,
     strong_denoise: bool = False,
@@ -387,9 +279,14 @@ def process_single_image(
             f"  ○ {input_file.path.name}: 圆检测成功 (质量={result.quality:.1f}, 半径={result.circle.radius:.1f}px, 耗时 {dt_det:.2f}s)"
         )
 
-    output_image = align(
-        input_image, result.circle, ref_image, ref_circle, use_advanced_alignment
+    shift = ref_circle.center - result.circle.center
+    output_image = align(input_image, shift)
+    logging.info(f"初始对齐: shift=({shift.x:.1f},{shift.y:.1f})")
+    refined_shift = detect_refined_shift(
+        output_image, ref_image, ref_circle, use_advanced_alignment
     )
+    if refined_shift:
+        output_image = align(output_image, refined_shift)
 
     output_image.exif = input_image.exif
     output_image.icc = input_image.icc
@@ -408,7 +305,7 @@ def process_single_image(
 def process_images(
     input_dir: Path,
     output_dir: Path,
-    hough: Hough,
+    hough: HoughParams,
     reference_path: Path | None = None,
     use_advanced_alignment=False,
     strong_denoise=False,

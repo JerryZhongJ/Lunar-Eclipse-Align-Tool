@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from functools import lru_cache
 import itertools
 import logging
 import cv2
@@ -6,29 +7,21 @@ import numpy as np
 import math
 import time
 from image import Image
-from utils import MIN_INLIERS, MIN_MEAN_ZNCC, ROI, Circle, Position, Vector, VectorArray
+from utils import (
+    MAX_REFINE_DELTA_PX,
+    MIN_INLIERS,
+    MIN_MEAN_ZNCC,
+    ROI,
+    Circle,
+    Point,
+    Vector,
+    VectorArray,
+    clip,
+    soft_disk_mask,
+)
 from numpy.typing import NDArray
 
 # ---------------- 工具函数 ----------------
-
-
-def soft_disk_mask(h, w, circle: Circle, inner=0.0, outer=0.98) -> NDArray[np.float32]:
-    Y, X = np.ogrid[:h, :w]
-    inner = max(0.0, min(1.0, inner))
-    outer = max(0.0, min(1.0, outer))
-    dist = np.sqrt((X - circle.x) ** 2 + (Y - circle.y) ** 2)
-    m = np.zeros((h, w), np.float32)
-    r_in = circle.radius * inner
-    r_out = circle.radius * outer
-    core = dist <= (r_out * 0.90)
-    m[core] = 1.0
-    band = (dist > (r_out * 0.90)) & (dist <= r_out)
-    if np.any(band):
-        t = (dist[band] - r_out * 0.90) / (r_out * 0.10 + 1e-6)
-        m[band] = 0.5 * (1 + np.cos(np.pi * t))
-    if r_in > 1:
-        m[dist < r_in] = 0
-    return m
 
 
 def clahe_and_bandpass(gray: NDArray) -> NDArray[np.uint8]:
@@ -53,7 +46,7 @@ def clahe_and_bandpass(gray: NDArray) -> NDArray[np.uint8]:
 def match_roi_zncc_local(
     roi_refF: NDArray,
     tgtF: NDArray,
-    pos: Position[int],
+    roi: ROI,
     search: int = 12,
     mask_patch: NDArray | None = None,
 ) -> tuple[Vector[float], float] | None:
@@ -61,15 +54,15 @@ def match_roi_zncc_local(
     Uses TM_CCORR_NORMED with optional template mask (same size as ref_patch).
     Returns (dx, dy, score).
     """
-    h, w = roi_refF.shape
-    H, W = tgtF.shape
+    h, w = roi.h, roi.w
+    H, W = tgtF.shape[:2]
 
     # target search window centered at the ref patch center
-    c: Position[int] = pos + Vector(w // 2, h // 2)
-    pos0: Position[int] = Position(
+    c: Point[int] = roi.position + Vector(w // 2, h // 2)
+    pos0: Point[int] = Point(
         max(0, c.x - w // 2 - search), max(0, c.y - h // 2 - search)
     )
-    pos1: Position[int] = Position(
+    pos1: Point[int] = Point(
         min(W, pos0.x + w + 2 * search), min(H, pos0.y + h + 2 * search)
     )
 
@@ -90,13 +83,13 @@ def match_roi_zncc_local(
         tpl_eff = tpl[m > 0.5]
         if tpl_eff.size == 0 or np.std(tpl_eff) < 1e-3:
             return None
-        method = cv2.TM_CCORR_NORMED
-        res = cv2.matchTemplate(win, tpl, method, mask=mask_patch.astype(np.uint8))
+        res = cv2.matchTemplate(
+            win, tpl, cv2.TM_CCORR_NORMED, mask=mask_patch.astype(np.uint8)
+        )
     else:
         if np.std(tpl) < 1e-3:
             return None
-        method = cv2.TM_CCORR_NORMED
-        res = cv2.matchTemplate(win, tpl, method)
+        res = cv2.matchTemplate(win, tpl, cv2.TM_CCORR_NORMED)
 
     # Handle NaN/Inf from OpenCV edge cases
     if not np.isfinite(res).all():
@@ -109,22 +102,20 @@ def match_roi_zncc_local(
     return d.as_type(float), maxv
 
 
-def _prepare_alignment_data(
-    img: Image, ref_img: Image, circle: Circle, n_rois: int, roi_size: int, search: int
+def initial_process(
+    img: Image, ref_img: Image, circle: Circle
 ) -> tuple[NDArray, NDArray]:
     """
     准备对齐数据：创建遮罩、预处理图像、调整参数
 
     返回: (refF, tgtF, energy, adjusted_n_rois, adjusted_roi_size, adjusted_search)
     """
-    logging.debug(
-        f"[Refine] HxW={ref_img.height}x{ref_img.width}, r≈{circle.radius:.1f}, n_rois={n_rois}, roi_init={roi_size}, search={search}"
-    )
+
     logging.debug(f"[Refine] 启用自适应ROI与亮度门控: brightness∈[30,220]")
 
     # 软盘遮罩，仅保留月盘内纹理
     mask: NDArray[np.float32] = soft_disk_mask(
-        ref_img.height, ref_img.width, circle, inner=0.0, outer=0.97
+        ref_img.height, ref_img.width, circle, inner=0.97 * 0.9, outer=0.97
     )
 
     # 归一化转为8-bit，用于能量图和ROI选择
@@ -149,11 +140,9 @@ def roi_matches_phasecorr(
 ) -> tuple[Vector, float] | None:
     ref_h, ref_w = refF_patch.shape
     h, w = tgtF.shape
-    roi_center: Position[int] = ROI(roi.x, roi.y, ref_w, ref_h).center.as_type(int)
-    p: Position[int] = (
-        roi_center - Vector(ref_w // 2, ref_h // 2) - Vector(search, search)
-    )
-    e: Position[int] = Position(min(w, p.x + ref_w), min(h, p.y + ref_h))
+    roi_center: Point[int] = ROI(roi.x, roi.y, ref_w, ref_h).center.as_type(int)
+    p: Point[int] = roi_center - Vector(ref_w // 2, ref_h // 2) - Vector(search, search)
+    e: Point[int] = Point(min(w, p.x + ref_w), min(h, p.y + ref_h))
 
     tgtF_patch = tgtF[p.y : e.y, p.x : e.x]
     if tgtF_patch.shape != refF_patch.shape:
@@ -184,16 +173,15 @@ def collect_roi_matches(
     tgtF: NDArray,
     ref_img: Image,
     search: int,
-    use_phasecorr: bool,
     time_budget_sec: float,
-) -> tuple[list[Position], list[Vector], list[float], list[float]]:
+) -> tuple[list[Point], list[Vector], list[float], list[float]]:
     """
     收集ROI匹配结果
 
     返回: (centers, d_list, weights, zncc_list)
     """
     # 收集 ROI 局部位移向量（dx_i, dy_i）及其中心（xi, yi）
-    centers: list[Position[float]] = []
+    centers: list[Point[float]] = []
     zncc_list: list[float] = []
     d_list: list[Vector[float]] = []
     weights: list[float] = []
@@ -219,9 +207,7 @@ def collect_roi_matches(
         ref_block8 = ref_img.normalized_gray[
             roi.y : roi.y + roi.h, roi.x : roi.x + roi.w
         ]
-        mask_patch = ((ref_block8 >= min_bright) & (ref_block8 <= max_bright)).astype(
-            np.uint8
-        ) * 255
+        mask_patch = (min_bright <= ref_block8 <= max_bright) * np.uint8(255)
         if mask_patch.size > 0:
             mask_patch = cv2.erode(mask_patch, np.ones((3, 3), np.uint8), iterations=1)
 
@@ -244,7 +230,7 @@ def collect_roi_matches(
             continue
 
         # 可选：相位相关做亚像素微调（仅在纹理足够时启用）
-        if use_phasecorr and zncc < 0.60:
+        if zncc < 0.60:
             rt = roi_matches_phasecorr(tgtF, refF_patch, roi, search, mask_patch)
             if rt:
                 vd = vd + rt[0]
@@ -255,9 +241,7 @@ def collect_roi_matches(
 
         # 结合对比度作为权重，弱纹理权重低
 
-        weights.append(
-            float(max(1e-3, zncc) * (0.5 + 0.5 * np.clip(std / 20.0, 0.0, 1.0)))
-        )
+        weights.append(max(1e-3, zncc) * (0.5 + 0.5 * clip(std / 20.0, 0.0, 1.0)))
         zncc_list.append(zncc)
         logging.debug(
             f"[Refine] 采纳ROI: zncc={zncc:.2f}, dx={vd.x:.2f}, dy={vd.y:.2f}"
@@ -399,28 +383,33 @@ def select_rois(
     return pickeds
 
 
-def align_with_multi_roi(
+def make_multi_roi_shift(
     img: Image,
     ref_img: Image,
     circle: Circle,
-    n_rois=16,
-    roi_size=128,
-    search: int = 12,
-    use_phasecorr=True,
+    n_rois: int | None = None,
+    roi_size: int | None = None,
+    search: int | None = None,
     time_budget_sec=1.2,
 ) -> Vector[float] | None:
     start_time = time.time()
+    # 自适应/裁剪 ROI 数量与大小，避免过多卷积
+    n_rois = clip(n_rois if n_rois else int(circle.radius // 70), 8, 24)
+    roi_size = clip(roi_size if roi_size else int(circle.radius * 0.18), 64, 128)
+    search = clip(search if search else int(circle.radius * 0.05), 6, 18)
+
+    logging.debug(
+        f"[Refine] HxW={ref_img.height}x{ref_img.width}, r≈{circle.radius:.1f}, n_rois={n_rois}, roi_init={roi_size}, search={search}"
+    )
     # 1. 准备对齐数据
-    refF, tgtF = _prepare_alignment_data(img, ref_img, circle, n_rois, roi_size, search)
+
+    refF, tgtF = initial_process(img, ref_img, circle)
     # 能量图直接用高频响应（仅保留高频，避免中频干扰）
 
-    # 自适应/裁剪 ROI 数量与大小，避免过多卷积
-    n_rois = int(np.clip(n_rois if n_rois else (circle.radius / 70), 8, 24))
-    roi_size = int(np.clip(roi_size if roi_size else (circle.radius * 0.12), 64, 128))
-    search = int(np.clip(search if search else (circle.radius * 0.05), 6, 18))
-
     # 2. 选择ROI
-    mask = soft_disk_mask(ref_img.height, ref_img.width, circle, inner=0.0, outer=0.97)
+    mask = soft_disk_mask(
+        ref_img.height, ref_img.width, circle, inner=0.97 * 0.9, outer=0.97
+    )
     rois: list[ROI] = select_rois(
         refF,
         mask,
@@ -440,7 +429,7 @@ def align_with_multi_roi(
 
     # 3. 收集ROI匹配结果
     centers, d_list, weights, zncc_list = collect_roi_matches(
-        rois, refF, tgtF, ref_img, search, use_phasecorr, time_budget_sec
+        rois, refF, tgtF, ref_img, search, time_budget_sec
     )
 
     num_centers = len(centers)
@@ -477,8 +466,6 @@ def align_with_multi_roi(
         )
         return None
 
-    # 最终 2x3 仿射矩阵（仅平移）
-
     logging.debug(
         f"[Refine] 内点={cnt}/{num_centers}, 平移=({shift.x:.2f},{shift.y:.2f}), meanZNCC={mean_zncc:.2f}, score={score:.3f}"
     )
@@ -486,3 +473,77 @@ def align_with_multi_roi(
         f"    [Refine] score={score:.3f}, inliers={int(cnt)}, roi_init≈{roi_size}, t={time.time() - start_time:.2f}s"
     )
     return shift
+
+
+def advanced_detect(
+    img: Image, ref_img: Image, ref_circle: Circle
+) -> Vector[float] | None:
+
+    shift = make_multi_roi_shift(
+        img,
+        ref_img,
+        ref_circle,
+    )
+    if not shift:
+        return None
+    # if (shift - base_shift).norm() > MAX_REFINE_DELTA_PX:
+    #     return None
+
+    residual = shift.norm()
+    logging.info(f"    [Refine] 残差=Δ{residual:.2f}px")
+    if residual > MAX_REFINE_DELTA_PX:
+        logging.warning(
+            f"    [Refine] 残差过大(Δ={residual:.2f}px > {MAX_REFINE_DELTA_PX:.1f}px)，放弃精配准并保持霍夫平移"
+        )
+        return None
+
+    logging.info(f"Multi-ROI refine (仅平移)")
+    return shift
+
+
+def masked_phase_corr(
+    img: Image, ref_img: Image, circle: Circle, inner: float = 0.90, outer: float = 0.98
+) -> Vector:
+    W, H = ref_img.widthXheight
+
+    mask = soft_disk_mask(H, W, circle, inner=inner, outer=outer).astype(np.float32)
+
+    rg = (ref_img.normalized_gray * mask).astype(np.float32)
+    tg = (img.normalized_gray * mask).astype(np.float32)
+
+    (dx, dy), _ = cv2.phaseCorrelate(rg, tg)
+    return Vector(dx, dy)
+
+
+def mask_phase_detect(
+    img: Image,
+    ref_img: Image,
+    ref_circle: Circle,
+) -> Vector[float] | None:
+
+    # 未启用高级：遮罩相位相关微调
+    shift = masked_phase_corr(
+        img,
+        ref_img,
+        ref_circle,
+    )
+    if abs(shift.x) <= 1e-3 and abs(shift.y) <= 1e-3:
+        return None
+    logging.info(f"Masked PhaseCorr")
+    return shift
+
+
+def detect_refined_shift(
+    aligned_img: Image,
+    ref_img: Image,
+    ref_circle: Circle,
+    use_advanced_alignment: bool,
+) -> Vector[float] | None:
+    return (
+        use_advanced_alignment
+        and advanced_detect(
+            aligned_img,
+            ref_img,
+            ref_circle,
+        )
+    ) or mask_phase_detect(aligned_img, ref_img, ref_circle)
