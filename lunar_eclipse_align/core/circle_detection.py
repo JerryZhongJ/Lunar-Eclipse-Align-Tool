@@ -70,10 +70,10 @@ def evaluate_circle_quality(img: Image, circle: Circle) -> float:
     inners: PointArray = directions * (circle.radius - 2) + circle.center
     outers: PointArray = directions * (circle.radius + 2) + circle.center
     mask = (
-        0 <= inners.x < w
-        and 0 <= inners.y < h
-        and 0 <= outers.x < w
-        and 0 <= outers.y < h
+        (0 <= inners.x < w)
+        & (0 <= inners.y < h)
+        & (0 <= outers.x < w)
+        & (0 <= outers.y < h)
     )
     if not np.sum(mask):
         return 0.0

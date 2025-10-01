@@ -13,7 +13,7 @@ from lunar_eclipse_align.core.utils import SUPPORTED_EXTS
 
 
 class Image:
-    rgb: NDArray
+    _rgb: NDArray
     _bgr: NDArray | None = None
     exif: PILImage.Exif | None
     icc: bytes | None
@@ -31,12 +31,13 @@ class Image:
     ):
 
         if rgb is not None:
-            self.rgb = rgb
+            self._rgb = rgb
         elif bgr is not None:
-            self.rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            self._height, self._width = bgr.shape[:2]
+            self._rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
         else:
             raise ValueError("必须提供 rgb 或 bgr 数据")
+        self._height, self._width = self.rgb.shape[:2]
         self.exif = exif
         self.icc = icc
 
@@ -72,6 +73,11 @@ class Image:
         return True
 
     @property
+    def rgb(self) -> NDArray:
+        """获取 RGB 格式的图像数据"""
+        return self._rgb
+
+    @property
     def bgr(self) -> NDArray:
         """获取 BGR 格式的图像数据"""
         if self._bgr is None:
@@ -86,7 +92,7 @@ class Image:
             self._normalized_gray = cv2.normalize(
                 gray.astype(np.float32), None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U  # type: ignore
             )
-            assert self._normalized_gray
+            assert self._normalized_gray is not None
         return self._normalized_gray
 
     @property

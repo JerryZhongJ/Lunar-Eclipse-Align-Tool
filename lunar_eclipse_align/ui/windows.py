@@ -3,6 +3,7 @@
 PySide6版本的窗口类
 包含调试窗口、预览窗口、进度窗口等
 """
+import logging
 import os
 from pathlib import Path
 import threading
@@ -10,9 +11,9 @@ import queue
 import numpy as np
 from typing import TYPE_CHECKING
 
-from lunar_eclipse_align.core.circle_detection import build_analysis_mask
+from lunar_eclipse_align.core.circle_detection import build_analysis_mask, detect_circle
 
-from lunar_eclipse_align.core.image import ImageFile
+from lunar_eclipse_align.core.image import Image, ImageFile
 from lunar_eclipse_align.ui.select_rect import EditableRect, InteractiveGraphicsView
 
 if TYPE_CHECKING:
@@ -60,7 +61,9 @@ import cv2
 # 导入工具函数
 from lunar_eclipse_align.core.utils import (
     SUPPORTED_EXTS,
+    Circle,
     HoughParams,
+    Vector,
 )
 
 
@@ -521,38 +524,16 @@ class PreviewWindow(QDialog):
         self.graphics_view.setBackgroundBrush(QBrush(QColor(51, 51, 51)))
 
         # 连接矩形创建信号
-        self.graphics_view.rect_created.connect(self.on_rect_created)
+        self.graphics_view.draw_finished.connect(self.draw_finished)
 
         layout.addWidget(self.graphics_view)
 
-    def on_rect_created(self, rect: EditableRect):
+        self.drawed_circle = None
+        self.drawed_center = None
+
+    def draw_finished(self, rect: EditableRect):
         """当创建新矩形时的回调"""
-        # 移除旧矩形
-        if self.current_rect and self.current_rect != rect:
-            self.current_rect.remove_from_scene()
-
         self.current_rect = rect
-
-        # 设置矩形变化回调
-        rect.rect_changed_callback = self.on_rect_changed
-
-        # 立即计算估计半径
-        self.on_rect_changed()
-
-    def on_rect_changed(self):
-        """矩形大小或位置改变时的回调"""
-        if not self.current_rect:
-            return
-
-        rect = self.current_rect.rect()
-        # 估计半径为矩形较小边的一半
-        estimated_radius = min(rect.width(), rect.height()) / 2
-
-        # 考虑预览缩放
-        if self.preview_scale > 0:
-            estimated_radius = estimated_radius / self.preview_scale
-
-        self.est_label.setText(f"估计半径: {int(estimated_radius)} px")
 
     def choose_image(self):
         """选择预览图像"""
@@ -574,7 +555,6 @@ class PreviewWindow(QDialog):
                 return
 
             self.preview_img_rgb = img.rgb
-            self.preview_img_bgr = img.bgr  # 保存BGR用于检测
             self.detected_circle = None  # 重置检测结果
 
             self.setWindowTitle(f"预览与半径估计 - {self.current_path.name}")
@@ -619,45 +599,36 @@ class PreviewWindow(QDialog):
         # 重置当前矩形引用
         self.current_rect = None
 
-        # 若有检测结果，重新绘制
-        if self.detected_circle is not None:
-            self._draw_detected_circle()
-
-    def _draw_detected_circle(self):
+    def _draw_circle(self, circle: Circle):
         """绘制检测到的圆"""
-        if self.detected_circle is None:
-            return
+        if self.drawed_circle:
+            self.graphics_scene.removeItem(self.drawed_circle)
+            self.drawed_circle = None
+        if self.drawed_center:
+            self.graphics_scene.removeItem(self.drawed_center)
+            self.drawed_center = None
 
-        try:
-            cx, cy, r = self.detected_circle
+        # 应用预览缩放
 
-            # 应用预览缩放
-            scale = self.preview_scale
-            cx *= scale
-            cy *= scale
-            r *= scale
+        cx, cy, r = circle.x, circle.y, circle.radius
+        # 画圆
+        self.graphics_scene.addEllipse(
+            cx - r, cy - r, 2 * r, 2 * r, QPen(QColor(255, 77, 79), 2)
+        )
 
-            # 画圆
-            circle = self.graphics_scene.addEllipse(
-                cx - r, cy - r, 2 * r, 2 * r, QPen(QColor(255, 77, 79), 2)
-            )
-
-            # 画圆心
-            center = self.graphics_scene.addEllipse(
-                cx - 3,
-                cy - 3,
-                6,
-                6,
-                QPen(Qt.PenStyle.NoPen),
-                QBrush(QColor(255, 77, 79)),
-            )
-
-        except Exception as e:
-            print(f"绘制检测圆失败: {e}")
+        # 画圆心
+        self.graphics_scene.addEllipse(
+            cx - 3,
+            cy - 3,
+            6,
+            6,
+            QPen(Qt.PenStyle.NoPen),
+            QBrush(QColor(255, 77, 79)),
+        )
 
     def detect_radius(self):
         """检测半径"""
-        if self.preview_img_bgr is None:
+        if self.preview_img_rgb is None:
             QMessageBox.warning(self, "提示", "请先选择一张样张。")
             return
 
@@ -669,7 +640,7 @@ class PreviewWindow(QDialog):
         rect = self.current_rect.rect()
 
         # 转换为图像坐标
-        scale = self.preview_scale if self.preview_scale > 0 else 1.0
+        scale = self.preview_scale
         img_rect = QRectF(
             rect.x() / scale,
             rect.y() / scale,
@@ -678,101 +649,29 @@ class PreviewWindow(QDialog):
         )
 
         # 估计半径和中心
-        estimated_radius = min(img_rect.width(), img_rect.height()) / 2
-        center_x = img_rect.center().x()
-        center_y = img_rect.center().y()
+        crop_img = Image(
+            rgb=self.preview_img_rgb[
+                int(img_rect.top()) : int(img_rect.bottom()),
+                int(img_rect.left()) : int(img_rect.right()),
+            ]
+        )
 
-        # 实现圆检测算法（基于原始ui.py的logic）
-        try:
-            import cv2
-            import numpy as np
-
-            # 获取图像
-            img = self.preview_img_bgr.copy()
-            H0, W0 = img.shape[:2]
-
-            # 缩放到合适大小以加快检测（类似原版逻辑）
-            MAX_SIDE = 1600
-            s = max(H0, W0) / float(MAX_SIDE)
-            if s > 1.0:
-                Hs = int(round(H0 / s))
-                Ws = int(round(W0 / s))
-                small = cv2.resize(img, (Ws, Hs), interpolation=cv2.INTER_AREA)
-            else:
-                s = 1.0
-                small = img.copy()
-                Hs, Ws = H0, W0
-
-            # 转换为灰度
-            if small.ndim == 3:
-                gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-            else:
-                gray = small.copy()
-
-            # 图像预处理
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-            gray = clahe.apply(gray)
-            gray = cv2.GaussianBlur(gray, (3, 3), 0)
-
-            # 计算检测参数（缩放到小图）
-            min_r_s = max(1, int(round((estimated_radius * 0.8) / s)))
-            max_r_s = max(min_r_s + 1, int(round((estimated_radius * 1.2) / s)))
-
-            # 期望圆心（缩放到小图）
-            exp_cx = center_x / s
-            exp_cy = center_y / s
-
-            # HoughCircles检测
-            param1 = 50  # 可以从主界面获取
-            param2 = 30
-            minDist = max(30, min(gray.shape[:2]) // 4)
-
-            circles = cv2.HoughCircles(
-                gray,
-                cv2.HOUGH_GRADIENT,
-                dp=1.2,
-                minDist=minDist,
-                param1=param1,
-                param2=param2,
-                minRadius=min_r_s,
-                maxRadius=max_r_s,
-            )
-
-            if circles is not None:
-                circles = np.squeeze(circles, axis=0)
-
-                # 选择最接近期望中心的圆
-                best_circle = None
-                min_dist = float("inf")
-
-                for x, y, r in circles:
-                    dist = np.sqrt((x - exp_cx) ** 2 + (y - exp_cy) ** 2)
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_circle = (x, y, r)
-
-                if best_circle:
-                    x, y, r = best_circle
-                    # 还原到原图尺度
-                    self.detected_circle = (x * s, y * s, r * s)
-                else:
-                    # 使用估计值
-                    self.detected_circle = (center_x, center_y, estimated_radius)
-            else:
-                # 使用估计值
-                self.detected_circle = (center_x, center_y, estimated_radius)
-
-        except Exception as e:
-            print(f"圆检测失败: {e}")
+        circle = detect_circle(
+            crop_img, self.app.params, self.app.enable_strong_denoise
+        )
+        if not circle:
+            logging.error("圆检测失败")
+            return
             # 回退到估计值
-            self.detected_circle = (center_x, center_y, estimated_radius)
+        delta = Vector(img_rect.left(), img_rect.top())
+        self.detected_circle = circle.shift(delta)
 
         # 重新绘制以显示检测结果
-        self._display_image()
+        self._draw_circle(self.detected_circle.scale(scale))
 
         # 更新标签
-        _, _, r = self.detected_circle
-        self.est_label.setText(f"估计半径: {int(r)} px (已检测)")
+
+        self.est_label.setText(f"估计半径: {int(self.detected_circle.radius)} px")
 
     def apply_detected_radius(self):
         """应用检测到的半径"""
@@ -780,9 +679,8 @@ class PreviewWindow(QDialog):
             QMessageBox.warning(self, "提示", "请先检测半径。")
             return
 
-        _, _, r = self.detected_circle
         delta = self.delta_spin.value()
-
+        r = self.detected_circle.radius
         min_r = max(1, int(r - delta))
         max_r = max(min_r + 1, int(r + delta))
 

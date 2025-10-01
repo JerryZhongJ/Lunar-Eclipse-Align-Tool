@@ -22,11 +22,12 @@ from PySide6.QtGui import (
 class ResizeHandle(QGraphicsEllipseItem):
     """拖拽句柄类，用于调整矩形大小"""
 
-    def __init__(self, parent_rect, handle_type, size=8):
+    def __init__(self, parent_rect: "EditableRect", handle_type, size=8):
         # 关键修改：将 parent_rect 作为 Qt 的父组件传入
         super().__init__(-size / 2, -size / 2, size, size, parent=parent_rect)
         self.parent_rect = parent_rect
         self.handle_type = handle_type  # 'top-left', 'top-right', 'bottom-left', 'bottom-right', 'top', 'bottom', 'left', 'right'
+        self.dragging = False  # 添加拖拽状态标记
 
         # 设置样式
         self.setPen(QPen(QColor(0, 191, 255), 2))  # 蓝色边框
@@ -54,13 +55,10 @@ class ResizeHandle(QGraphicsEllipseItem):
         self.setCursor(cursor_map.get(self.handle_type, Qt.CursorShape.ArrowCursor))
 
     def itemChange(self, change, value):
-        """句柄位置改变时调整父矩形"""
-        if (
-            change == QGraphicsItem.GraphicsItemChange.ItemPositionChange
-            and self.parent_rect
-        ):
-            # 通知父矩形更新
-            self.parent_rect.handle_moved(self.handle_type, value)
+        """处理项变化事件"""
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange:
+            new_pos = value
+            self.parent_rect.handle_moved(self.handle_type, new_pos)
         return super().itemChange(change, value)
 
 
@@ -69,7 +67,7 @@ class EditableRect(QGraphicsRectItem):
 
     def __init__(self, rect, parent=None):
         super().__init__(rect, parent)
-        self.handles = {}
+        self.handles: dict[str, ResizeHandle] = {}
         self.is_updating = False
 
         # 设置样式
@@ -77,15 +75,12 @@ class EditableRect(QGraphicsRectItem):
         self.setBrush(QBrush(QColor(0, 191, 255, 30)))  # 半透明蓝色填充
 
         # 设置标志
-        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
-        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
 
+    def enable_handles(self):
         # 创建句柄
         self.create_handles()
-
-        # 回调函数
-        self.rect_changed_callback: Callable | None = None
+        self.update_handles()
 
     def create_handles(self):
         """创建8个拖拽句柄"""
@@ -103,15 +98,14 @@ class EditableRect(QGraphicsRectItem):
         for handle_type in handle_types:
             handle = ResizeHandle(self, handle_type)
             self.handles[handle_type] = handle
-            # 移除手动 addItem - Qt 父子关系会自动处理
 
         self.update_handles()
 
     def update_handles(self):
         """更新句柄位置"""
         if self.is_updating:
-            return
-
+            return  # 防止递归调用
+        self.is_updating = True
         rect = self.rect()
         positions = {
             "top-left": QPointF(rect.left(), rect.top()),
@@ -127,134 +121,99 @@ class EditableRect(QGraphicsRectItem):
         for handle_type, handle in self.handles.items():
             if handle_type in positions:
                 handle.setPos(positions[handle_type])
+        self.is_updating = False
 
     def handle_moved(self, handle_type, new_pos):
         """处理句柄移动"""
-        if self.is_updating:
-            return
 
-        self.is_updating = True
-        rect = self.rect()
+        rectF = self.rect()
 
         # 根据句柄类型调整矩形
         if handle_type == "top-left":
-            rect.setTopLeft(new_pos)
+            rectF.setTopLeft(new_pos)
         elif handle_type == "top":
-            rect.setTop(new_pos.y())
+            rectF.setTop(new_pos.y())
         elif handle_type == "top-right":
-            rect.setTopRight(new_pos)
+            rectF.setTopRight(new_pos)
         elif handle_type == "right":
-            rect.setRight(new_pos.x())
+            rectF.setRight(new_pos.x())
         elif handle_type == "bottom-right":
-            rect.setBottomRight(new_pos)
+            rectF.setBottomRight(new_pos)
         elif handle_type == "bottom":
-            rect.setBottom(new_pos.y())
+            rectF.setBottom(new_pos.y())
         elif handle_type == "bottom-left":
-            rect.setBottomLeft(new_pos)
+            rectF.setBottomLeft(new_pos)
         elif handle_type == "left":
-            rect.setLeft(new_pos.x())
+            rectF.setLeft(new_pos.x())
 
-        # 确保矩形有最小尺寸
-        min_size = 20
-        if rect.width() < min_size:
-            if handle_type in ["top-left", "left", "bottom-left"]:
-                rect.setLeft(rect.right() - min_size)
-            else:
-                rect.setRight(rect.left() + min_size)
-
-        if rect.height() < min_size:
-            if handle_type in ["top-left", "top", "top-right"]:
-                rect.setTop(rect.bottom() - min_size)
-            else:
-                rect.setBottom(rect.top() + min_size)
-
-        self.setRect(rect)
+        self.setRect(rectF)
         self.update_handles()
-        self.is_updating = False
-
-        # 触发回调
-        if self.rect_changed_callback:
-            self.rect_changed_callback()
-
-    def itemChange(self, change, value):
-        """矩形位置改变时更新句柄"""
-        if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
-            self.update_handles()
-            if self.rect_changed_callback:
-                self.rect_changed_callback()
-        return super().itemChange(change, value)
-
-    def remove_from_scene(self):
-        """从场景中移除矩形和所有句柄"""
-        # 使用父子关系后，只需要移除父项，子项会自动被移除
-        if self.scene():
-            self.scene().removeItem(self)
 
 
 class InteractiveGraphicsView(QGraphicsView):
     """交互式图形视图，支持鼠标绘制矩形框"""
 
-    rect_created = Signal(object)  # 发射新创建的矩形信号
+    draw_finished = Signal(object)  # 发射新创建的矩形信号
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.current_rect = None
-        self.start_pos = None
-        self.drawing = False
+        self.drawing_start: QPointF | None = None
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             # 转换到场景坐标
             scene_pos = self.mapToScene(event.pos())
 
+            if self.drawing_start:
+                super().mousePressEvent(event)
+                return  # 忽略多余的点击
+
             # 检查是否点击在现有矩形或句柄上
             item = self.scene().itemAt(scene_pos, self.transform())
             if isinstance(item, (EditableRect, ResizeHandle)):
+                print("no")
                 # 如果点击在现有元素上，交给默认处理
                 super().mousePressEvent(event)
                 return
-
+            print("press")
             # 开始绘制新矩形
-            self.start_pos = scene_pos
-            self.drawing = True
+            self.drawing_start = scene_pos
 
             # 如果已有矩形，先移除
             if self.current_rect:
-                self.current_rect.remove_from_scene()
-                self.current_rect = None
-
+                self.scene().removeItem(self.current_rect)
+            self.current_rect = EditableRect(QRectF(scene_pos, scene_pos))
+            self.scene().addItem(self.current_rect)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if self.drawing and self.start_pos:
+        if self.drawing_start:
+            assert self.current_rect is not None
+            assert self.drawing_start is not None
             current_pos = self.mapToScene(event.pos())
-
             # 计算矩形区域
-            rect = QRectF(self.start_pos, current_pos).normalized()
-
-            # 更新或创建临时矩形
-            if self.current_rect:
-                self.current_rect.remove_from_scene()
-
-            self.current_rect = EditableRect(rect)
-            self.scene().addItem(self.current_rect)
+            rect = QRectF(self.drawing_start, current_pos).normalized()
+            self.current_rect.setRect(rect)
 
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and self.drawing:
-            self.drawing = False
+        if event.button() == Qt.MouseButton.LeftButton and self.drawing_start:
+            print("release")
+            assert self.current_rect is not None
+            self.drawing_start = None
 
-            if self.current_rect:
-                # 检查矩形大小是否合理
-                rect = self.current_rect.rect()
-                if rect.width() > 10 and rect.height() > 10:
-                    # 发射信号，通知创建了新矩形
-                    self.rect_created.emit(self.current_rect)
-                else:
-                    # 矩形太小，移除
-                    self.current_rect.remove_from_scene()
-                    self.current_rect = None
+            # 检查矩形大小是否合理
+            rect = self.current_rect.rect()
+            if rect.width() > 10 and rect.height() > 10:
+                # 发射信号，通知绘制完成
+                self.draw_finished.emit(self.current_rect)
+                self.current_rect.enable_handles()
+            else:
+                # 矩形太小，移除
+                self.scene().removeItem(self.current_rect)
+                self.current_rect = None
 
         super().mouseReleaseEvent(event)
