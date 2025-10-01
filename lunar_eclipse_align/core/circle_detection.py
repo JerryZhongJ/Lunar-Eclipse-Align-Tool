@@ -6,15 +6,14 @@ import numpy as np
 import cv2
 from numpy._typing._array_like import NDArray
 
-from lunar_eclipse_align.image import Image
-from lunar_eclipse_align.utils import (
+from lunar_eclipse_align.core.image import Image
+from lunar_eclipse_align.core.utils import (
     THUMB_SIZE,
     Circle,
     HoughParams,
     PointArray,
     VectorArray,
     ring_mask,
-    soft_disk_mask,
     touches_border,
 )
 from skimage.measure import CircleModel, ransac
@@ -284,7 +283,7 @@ def hough_on_thumb_detect(masked_gray: NDArray, params: HoughParams) -> list[Cir
     circles = cv2.HoughCircles(
         small,
         minDist=small_height // 2,
-        **params._asdict(),
+        **params,
     )
 
     circles = [Circle.from_ndarray(c / scale) for c in circles[0]]
@@ -347,7 +346,7 @@ def timeout_fallback_detection(gray: NDArray, params: HoughParams) -> list[Circl
     circles = cv2.HoughCircles(
         small,
         minDist=small_height // 2,
-        **params._asdict(),
+        **params,
     )
 
     circles = [Circle.from_ndarray(c) for c in circles[0]]
@@ -394,7 +393,7 @@ def standard_hough_detect(masked_gray: NDArray, hough: HoughParams) -> list[Circ
     circles = cv2.HoughCircles(
         masked_gray,
         minDist=height // 2,
-        **hough._asdict(),
+        **hough,
     )
     if circles is None:
         return []
@@ -438,7 +437,7 @@ def adaptive_hough_detect(
     circles = cv2.HoughCircles(
         masked_gray,
         minDist=height // 2,
-        **params._asdict(),
+        **params,
     )
     if circles is None:
         return []
@@ -512,7 +511,7 @@ def padding_fallback_detect(
     circles = cv2.HoughCircles(
         padded_masked_gray,
         minDist=height // 2,
-        **params._asdict(),
+        **params,
     )
     circles = [Circle.from_ndarray(c) for c in circles[0]]
     return circles or detect_circle_robust(padded_gray)
@@ -536,7 +535,7 @@ def final_detect(
     circles = cv2.HoughCircles(
         gray,
         minDist=max(16, min(height, width) // 4),
-        **params._asdict(),
+        **params,
     )
 
     circles = [Circle.from_ndarray(c) for c in circles[0]]

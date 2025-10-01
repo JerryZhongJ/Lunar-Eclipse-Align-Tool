@@ -39,13 +39,42 @@ def get_memory_usage_mb():
         return 0.0
 
 
-class HoughParams(NamedTuple):
+class HoughParams:
     minRadius: int
     maxRadius: int
     param1: int
     param2: int
     method: int = cv2.HOUGH_GRADIENT
     dp: float = 1.2
+
+    def __init__(
+        self,
+        minRadius: int,
+        maxRadius: int,
+        param1: int,
+        param2: int,
+        method: int = cv2.HOUGH_GRADIENT,
+        dp: float = 1.2,
+    ):
+        self.minRadius = minRadius
+        self.maxRadius = maxRadius
+        self.param1 = param1
+        self.param2 = param2
+        self.method = method
+        self.dp = dp
+
+    def keys(self):
+        return ("minRadius", "maxRadius", "param1", "param2", "method", "dp")
+
+    def __getitem__(self, key):
+        if key not in self.keys():
+            raise KeyError(f"Invalid key: {key}")
+        return getattr(self, key)
+
+    def __setitem__(self, key, value):
+        if key not in self.keys():
+            raise KeyError(f"Invalid key: {key}")
+        setattr(self, key, value)
 
 
 def to_display_rgb(img: np.ndarray) -> np.ndarray:

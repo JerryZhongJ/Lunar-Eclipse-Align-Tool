@@ -5,21 +5,21 @@ from typing import Iterable
 
 import cv2, numpy as np
 
-from lunar_eclipse_align.image import Image, ImageFile
-from lunar_eclipse_align.utils import (
+from lunar_eclipse_align.core.image import Image, ImageFile
+from lunar_eclipse_align.core.utils import (
+    Circle,
     HoughParams,
     Point,
     Vector,
     get_memory_usage_mb,
 )
 
-from lunar_eclipse_align.circle_detection import (
-    Circle,
+from lunar_eclipse_align.core.circle_detection import (
     detect_circle,
     detect_circle_quick,
 )
 
-from lunar_eclipse_align.shift_detection import detect_refined_shift
+from lunar_eclipse_align.core.shift_detection import detect_refined_shift
 
 # ------------------ 调试图保存 ------------------
 # def save_debug_image(

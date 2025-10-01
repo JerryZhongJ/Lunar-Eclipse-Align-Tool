@@ -38,7 +38,8 @@ dependencies = [
     "scipy>=1.16",
     "scikit-image>=0.25.2"
 ]
-
+[project.optional-dependencies]
+test = ["pytest>=7.0", "pytest-qt>=4.0"]
 [project.scripts]
 lunar-eclipse-align = "lunar_eclipse_align.main:main"
 
@@ -106,7 +107,7 @@ markers = [
 
 # Coverage 配置
 [tool.coverage.run]
-source = ["src"]
+source = ["lunar_eclipse_align"]
 omit = [
     "*/tests/*",
     "*/test_*",

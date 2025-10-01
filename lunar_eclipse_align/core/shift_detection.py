@@ -3,8 +3,8 @@ import logging
 import cv2
 import numpy as np
 import time
-from lunar_eclipse_align.image import Image
-from lunar_eclipse_align.utils import (
+from lunar_eclipse_align.core.image import Image
+from lunar_eclipse_align.core.utils import (
     MAX_REFINE_DELTA_PX,
     MIN_INLIERS,
     MIN_MEAN_ZNCC,

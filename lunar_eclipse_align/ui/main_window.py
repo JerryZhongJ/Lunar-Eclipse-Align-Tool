@@ -34,14 +34,14 @@ from PySide6.QtCore import (
 
 
 # 导入工具函数
-from lunar_eclipse_align.pipeline import process_images
-from lunar_eclipse_align.utils import (
+from lunar_eclipse_align.core.pipeline import process_images
+from lunar_eclipse_align.core.utils import (
     SUPPORTED_EXTS,
     SYSTEM,
     HoughParams,
 )
 
-from lunar_eclipse_align.ui_windows import PreviewWindow, DebugWindow, ProgressWindow
+from lunar_eclipse_align.ui.windows import PreviewWindow, DebugWindow, ProgressWindow
 
 
 # 定义信号用于线程间通信
@@ -263,14 +263,14 @@ class UniversalLunarAlignApp(QMainWindow):
             slider = QSlider(Qt.Orientation.Horizontal)
             slider.setMinimum(min_val)
             slider.setMaximum(max_val)
-            slider.setValue(self.params._asdict()[key])
+            slider.setValue(self.params[key])
             param_row_layout.addWidget(slider, 2)
 
             # 数值输入框
             spinbox = QSpinBox()
             spinbox.setMinimum(min_val)
             spinbox.setMaximum(max_val)
-            spinbox.setValue(self.params._asdict()[key])
+            spinbox.setValue(self.params[key])
             param_row_layout.addWidget(spinbox, 0)
 
             # 连接信号
@@ -393,7 +393,7 @@ class UniversalLunarAlignApp(QMainWindow):
 
     def _on_param_changed(self, key, value, companion_widget):
         """参数改变时的处理"""
-        setattr(self.params, key, value)
+        self.params[key] = value
 
         # 阻止循环更新
         companion_widget.blockSignals(True)

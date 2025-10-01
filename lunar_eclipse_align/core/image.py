@@ -9,7 +9,7 @@ from numpy.typing import NDArray
 
 import gc
 
-from lunar_eclipse_align.utils import SUPPORTED_EXTS
+from lunar_eclipse_align.core.utils import SUPPORTED_EXTS
 
 
 class Image:
