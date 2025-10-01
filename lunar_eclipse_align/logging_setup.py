@@ -1,4 +1,5 @@
 import logging
+import os
 
 
 class AnsiColorFormatter(logging.Formatter):
@@ -22,11 +23,13 @@ class AnsiColorFormatter(logging.Formatter):
 
 def setup_logging():
     """设置日志记录器"""
+    logging.getLogger("PIL").setLevel(logging.WARNING)
     logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-
+    logger.setLevel(logging.DEBUG)
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
+    if os.environ.get("DEBUG"):
+        console_handler.setLevel(logging.DEBUG)
     console_formatter = AnsiColorFormatter("{levelname:<8s} | {message}", style="{")
     console_handler.setFormatter(console_formatter)
     logger.addHandler(console_handler)

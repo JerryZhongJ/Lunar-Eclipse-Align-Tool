@@ -195,7 +195,7 @@ class DebugWindow(QDialog):
     def choose_image(self):
         input_path = self.app.input_path
         """选择样张图像"""
-        initial_dir = input_path if input_path and input_path.is_dir() else os.getcwd()
+        initial_dir = input_path if input_path and input_path.is_dir() else Path()
         file_filter = f"支持的图像 ( {' '.join(SUPPORTED_EXTS)} );;所有文件 (*.*)"
 
         file_path, _ = QFileDialog.getOpenFileName(
@@ -209,19 +209,7 @@ class DebugWindow(QDialog):
                 QMessageBox.critical(self, "错误", "无法读取该图像。")
                 return
 
-            # self.preview_img_cv = img
-
-            self.preview_rgb = img.rgb
-
-            # 生成灰度版
-            try:
-                if self.preview_rgb.ndim == 3:
-                    gray = cv2.cvtColor(self.preview_rgb, cv2.COLOR_BGR2GRAY)
-                else:
-                    gray = self.preview_rgb
-                self.preview_gray_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
-            except Exception:
-                self.preview_gray_rgb = self.preview_rgb
+            self.preview_image = ImageFile(self.current_path).image
 
             # 设置回主界面
             self.refresh()
@@ -452,14 +440,11 @@ class PreviewWindow(QDialog):
 
         # 图像相关
         self.current_path: Path | None = None
-        self.preview_img_rgb = None
-        self.preview_img_bgr = None  # 用于检测
-        self.preview_scale = 1.0
+        self.preview_scale: float = 1.0
 
         # 矩形选择相关
-        self.current_rect: EditableRect | None = None
-        self.detected_circle = None  # (cx, cy, r) 检测到的圆
-
+        self.detected_circle: Circle | None = None  # (cx, cy, r) 检测到的圆
+        self.preview_img: Image | None = None
         self._center_window()
         self._setup_ui()
 
@@ -523,17 +508,10 @@ class PreviewWindow(QDialog):
         self.graphics_view.setScene(self.graphics_scene)
         self.graphics_view.setBackgroundBrush(QBrush(QColor(51, 51, 51)))
 
-        # 连接矩形创建信号
-        self.graphics_view.draw_finished.connect(self.draw_finished)
-
         layout.addWidget(self.graphics_view)
 
         self.drawed_circle = None
         self.drawed_center = None
-
-    def draw_finished(self, rect: EditableRect):
-        """当创建新矩形时的回调"""
-        self.current_rect = rect
 
     def choose_image(self):
         """选择预览图像"""
@@ -553,51 +531,57 @@ class PreviewWindow(QDialog):
             if img is None:
                 QMessageBox.critical(self, "错误", "无法读取该图像。")
                 return
-
-            self.preview_img_rgb = img.rgb
-            self.detected_circle = None  # 重置检测结果
+            self.preview_img = img
 
             self.setWindowTitle(f"预览与半径估计 - {self.current_path.name}")
             self._display_image()
 
+    def refresh(self):
+        self.graphics_scene.clear()
+        self.graphics_view.current_rect = None
+        self.detected_circle = None  # 重置检测结果
+        self.preview_scale = 1.0
+        self.drawed_circle = None
+        self.drawed_center = None
+
     def _display_image(self):
         """显示图像"""
-        if self.preview_img_rgb is None:
+        if self.preview_img is None:
             # 显示提示
             self.graphics_scene.clear()
             text = self.graphics_scene.addText("请选择样张，在图上拖拽鼠标框选月亮")
             text.setDefaultTextColor(QColor("lightgray"))
             return
-
+        self.refresh()
         # 转换为QPixmap
-        h, w = self.preview_img_rgb.shape[:2]
+
         q_img = QImage(
-            self.preview_img_rgb.data,
-            w,
-            h,
-            self.preview_img_rgb.strides[0],
+            self.preview_img.rgb.data,
+            self.preview_img.width,
+            self.preview_img.height,
+            self.preview_img.rgb.strides[0],
             QImage.Format.Format_RGB888,
         )
         pixmap = QPixmap.fromImage(q_img)
 
         # 计算缩放
         view_size = self.graphics_view.size()
-        scale = min(view_size.width() / w, view_size.height() / h, 1.0)
+        scale = min(
+            view_size.width() / self.preview_img.width,
+            view_size.height() / self.preview_img.height,
+            1.0,
+        )
         if scale < 1.0:
             pixmap = pixmap.scaled(
-                int(w * scale),
-                int(h * scale),
+                int(self.preview_img.width * scale),
+                int(self.preview_img.height * scale),
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
 
         # 清除场景并添加新图像
-        self.graphics_scene.clear()
         self.graphics_scene.addPixmap(pixmap)
         self.preview_scale = scale
-
-        # 重置当前矩形引用
-        self.current_rect = None
 
     def _draw_circle(self, circle: Circle):
         """绘制检测到的圆"""
@@ -612,12 +596,12 @@ class PreviewWindow(QDialog):
 
         cx, cy, r = circle.x, circle.y, circle.radius
         # 画圆
-        self.graphics_scene.addEllipse(
+        self.drawed_circle = self.graphics_scene.addEllipse(
             cx - r, cy - r, 2 * r, 2 * r, QPen(QColor(255, 77, 79), 2)
         )
 
         # 画圆心
-        self.graphics_scene.addEllipse(
+        self.drawed_center = self.graphics_scene.addEllipse(
             cx - 3,
             cy - 3,
             6,
@@ -628,44 +612,50 @@ class PreviewWindow(QDialog):
 
     def detect_radius(self):
         """检测半径"""
-        if self.preview_img_rgb is None:
+        if self.preview_img is None:
             QMessageBox.warning(self, "提示", "请先选择一张样张。")
             return
 
-        if self.current_rect is None:
+        if self.graphics_view.current_rect is None:
             QMessageBox.warning(self, "提示", "请先在图像上拖拽选择一个区域。")
             return
 
         # 获取矩形区域（场景坐标）
-        rect = self.current_rect.rect()
+        rect = self.graphics_view.current_rect.rect()
 
         # 转换为图像坐标
         scale = self.preview_scale
-        img_rect = QRectF(
-            rect.x() / scale,
-            rect.y() / scale,
-            rect.width() / scale,
-            rect.height() / scale,
-        )
 
+        x, y, width, height = rect.x(), rect.y(), rect.width(), rect.height()
+
+        top, left, bottom, right = (
+            y / scale,
+            x / scale,
+            (y + height) / scale,
+            (x + width) / scale,
+        )
+        logging.debug(f"预览：矩形区域 {top=}, {left=}, {bottom=}, {right=}")
         # 估计半径和中心
         crop_img = Image(
-            rgb=self.preview_img_rgb[
-                int(img_rect.top()) : int(img_rect.bottom()),
-                int(img_rect.left()) : int(img_rect.right()),
+            rgb=self.preview_img.rgb[
+                int(top) : int(bottom),
+                int(left) : int(right),
             ]
         )
-
-        circle = detect_circle(
-            crop_img, self.app.params, self.app.enable_strong_denoise
-        )
+        max_side = max(crop_img.width, crop_img.height)
+        params = self.app.params.copy()
+        params.minRadius = max_side // 20
+        params.maxRadius = max_side // 2
+        circle = detect_circle(crop_img, params, self.app.enable_strong_denoise)
         if not circle:
-            logging.error("圆检测失败")
+            logging.error("预览：圆检测失败")
             return
             # 回退到估计值
-        delta = Vector(img_rect.left(), img_rect.top())
+        delta = Vector(left, top)
         self.detected_circle = circle.shift(delta)
-
+        logging.info(
+            f"预览：检测到圆:（圆心: {self.detected_circle.x}, {self.detected_circle.y}，半径: {self.detected_circle.radius} px）"
+        )
         # 重新绘制以显示检测结果
         self._draw_circle(self.detected_circle.scale(scale))
 

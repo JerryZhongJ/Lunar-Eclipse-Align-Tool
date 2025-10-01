@@ -76,6 +76,16 @@ class HoughParams:
             raise KeyError(f"Invalid key: {key}")
         setattr(self, key, value)
 
+    def copy(self) -> "HoughParams":
+        return HoughParams(
+            self.minRadius,
+            self.maxRadius,
+            self.param1,
+            self.param2,
+            self.method,
+            self.dp,
+        )
+
 
 def to_display_rgb(img: np.ndarray) -> np.ndarray:
     img = img.astype(np.float32)
@@ -428,6 +438,7 @@ class Circle:
     _radius: float
 
     def __init__(self, x: float, y: float, radius: float):
+        assert isinstance(x, float)
         self._center = Point(x, y)
         self._radius = radius
 

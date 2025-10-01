@@ -153,12 +153,10 @@ class EditableRect(QGraphicsRectItem):
 class InteractiveGraphicsView(QGraphicsView):
     """交互式图形视图，支持鼠标绘制矩形框"""
 
-    draw_finished = Signal(object)  # 发射新创建的矩形信号
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
-        self.current_rect = None
+        self.current_rect: EditableRect | None = None
         self.drawing_start: QPointF | None = None
 
     def mousePressEvent(self, event):
@@ -208,8 +206,6 @@ class InteractiveGraphicsView(QGraphicsView):
             # 检查矩形大小是否合理
             rect = self.current_rect.rect()
             if rect.width() > 10 and rect.height() > 10:
-                # 发射信号，通知绘制完成
-                self.draw_finished.emit(self.current_rect)
                 self.current_rect.enable_handles()
             else:
                 # 矩形太小，移除

@@ -67,13 +67,17 @@ def evaluate_circle_quality(img: Image, circle: Circle) -> float:
     directions = VectorArray(
         np.column_stack((np.cos(angles), np.sin(angles))), safe=False
     )
-    inners: PointArray = directions * (circle.radius - 2) + circle.center
-    outers: PointArray = directions * (circle.radius + 2) + circle.center
+    inners: PointArray = directions * (circle.radius - 2.0) + circle.center
+    outers: PointArray = directions * (circle.radius + 2.0) + circle.center
     mask = (
-        (0 <= inners.x < w)
-        & (0 <= inners.y < h)
-        & (0 <= outers.x < w)
-        & (0 <= outers.y < h)
+        (0 <= inners.x)
+        & (inners.x < w)
+        & (0 <= inners.y)
+        & (inners.y < h)
+        & (0 <= outers.x)
+        & (outers.x < w)
+        & (0 <= outers.y)
+        & (outers.y < h)
     )
     if not np.sum(mask):
         return 0.0
@@ -131,8 +135,8 @@ def edge_points_outer_rim(
     if prev_circle is None:
         return pts
     vectors = pts - prev_circle.center
-    distance_cond = (
-        prev_circle.radius * 0.85 < vectors.norms() < prev_circle.radius * 1.15
+    distance_cond = (prev_circle.radius * 0.85 < vectors.norms()) & (
+        vectors.norms() < prev_circle.radius * 1.15
     )
 
     valid_pts = pts.filter(distance_cond)
@@ -317,9 +321,8 @@ def build_detection_roi(
             1.30,
             max(1.15, (params.maxRadius / max(prev_circle.radius, 1e-6)) * 1.05),
         )
-        ring_prev = ring_mask(
-            width, height, prev_circle, inner=inner, outer=outer
-        ) * np.uint8(255)
+        ring_prev = ring_mask(width, height, prev_circle, inner=inner, outer=outer)
+        ring_prev = (ring_prev * 255).astype(np.uint8)
         processed = cv2.bitwise_and(processed, processed, mask=ring_prev)
         return processed
 
@@ -398,7 +401,7 @@ def standard_hough_detect(masked_gray: NDArray, hough: HoughParams) -> list[Circ
     if circles is None:
         return []
 
-    circles = [Circle(*c) for c in circles[0]]
+    circles = [Circle.from_ndarray(c) for c in circles[0]]
     if circles:
         logging.info("标准霍夫")
     return circles
@@ -441,7 +444,7 @@ def adaptive_hough_detect(
     )
     if circles is None:
         return []
-    circles = [Circle(*c) for c in circles[0]]
+    circles = [Circle.from_ndarray(c) for c in circles[0]]
     if circles:
         logging.info(f"自适应霍夫(P1={params.param1},P2={params.param2})")
 
@@ -493,8 +496,8 @@ def padding_fallback_detect(
     padded_masked_gray = padded_gray
     if est is not None:
         ring = ring_mask(
-            padded_gray.shape[0],
-            padded_gray.shape[1],
+            padded_gray.shape[1],  # width
+            padded_gray.shape[0],  # height
             est,
             inner=0.70,
             outer=1.15,
@@ -623,7 +626,7 @@ def detect_circle(
         return None
 
     logging.info(
-        f"  ○  圆检测成功 (质量={best_quality:.1f}, 半径={best_circle.radius:.1f}px"
+        f"  ○  圆检测成功 (质量={best_quality:.1f}, 半径={best_circle.radius:.1f}px）"
     )
 
     return best_circle

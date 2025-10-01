@@ -39,7 +39,7 @@ dependencies = [
     "scikit-image>=0.25.2"
 ]
 [project.optional-dependencies]
-test = ["pytest>=7.0", "pytest-qt>=4.0"]
+test = ["pytest>=7.0", "pytest-qt>=4.0", "pytest-cov>=4.0"]
 [project.scripts]
 lunar-eclipse-align = "lunar_eclipse_align.main:main"
 
