@@ -1,4 +1,3 @@
-import itertools
 import logging
 from pathlib import Path
 import os, math, time
@@ -6,25 +5,21 @@ from typing import Iterable
 
 import cv2, numpy as np
 
-from image import Image, ImageFile
-from utils import (
-    MAX_REFINE_DELTA_PX,
-    MAX_SCAN_COUNT,
-    MAX_SIDE,
-    DetectionResult,
+from lunar_eclipse_align.image import Image, ImageFile
+from lunar_eclipse_align.utils import (
     HoughParams,
     Point,
     Vector,
     get_memory_usage_mb,
 )
 
-from circle_detection import Circle, detect_circle
-from version import VERSION
+from lunar_eclipse_align.circle_detection import (
+    Circle,
+    detect_circle,
+    detect_circle_quick,
+)
 
-
-from shift_detection import detect_refined_shift, make_multi_roi_shift
-from numpy.typing import NDArray
-
+from lunar_eclipse_align.shift_detection import detect_refined_shift
 
 # ------------------ 调试图保存 ------------------
 # def save_debug_image(
@@ -83,154 +78,92 @@ from numpy.typing import NDArray
 #         print(f"调试图像生成失败: {e}")
 
 
-# ------------------ 缩略图辅助 ------------------
-def detect_circle_on_thumb(
-    img: Image, hough: HoughParams, scale: float, strong_denoise=False
-) -> DetectionResult | None:
-    """
-    Returns:
-    - Circle: (cx, cy, radius) in original image scale
-    - scale: float, the scale factor from original to thumbnail
-    - quality: float, quality score of the detected circle
-    - method: str, description of the detection method used
-    Raises Exception if detection fails
-    仅用于辅助选择参考图像
-    """
-    assert scale < 1
-
-    small_img = Image(
-        rgb=cv2.resize(
-            img.rgb,
-            (int(img.width * scale), int(img.height * scale)),
-            interpolation=cv2.INTER_AREA,
-        )
-    )
-
-    small_hough = HoughParams(
-        minRadius=max(1, int(hough.minRadius * scale)),
-        maxRadius=max(
-            2, int(hough.minRadius * scale) + 1, int(hough.maxRadius * scale)
-        ),
-        param1=hough.param1,
-        param2=hough.param2,
-    )
-
-    result = detect_circle(small_img, small_hough, strong_denoise=strong_denoise)
-    if result is None:
-        logging.error("缩略图圆检测失败")
-        return None
-
-    circle = Circle(
-        x=result.circle.x / scale,
-        y=result.circle.y / scale,
-        radius=result.circle.radius / scale,
-    )
-
-    return DetectionResult(circle, result.quality)
-
-
-def detect_circle_quickly(
-    img: Image, hough: HoughParams, strong_denoise=False
-) -> DetectionResult | None:
-
-    max_wh = max(img.height, img.width)
-    if max_wh > MAX_SIDE:
-        scale = MAX_SIDE / float(max_wh)
-        result = detect_circle_on_thumb(
-            img, hough, scale, strong_denoise=strong_denoise
-        )
-        if result:
-            return result
-        logging.warning("缩略图检测失败，回退到原图做一次圆检测...")
-
-    result = detect_circle(img, hough, strong_denoise=strong_denoise)
-    if not result:
-        logging.warning("原图检测失败...")
-    return result
-
-
-# ------------------ 参考图像选择 ------------------
-def load_user_reference(
-    reference_file: ImageFile, hough: HoughParams, strong_denoise: bool = False
-) -> DetectionResult | None:
-
-    ref_img = reference_file.image
-    if ref_img is None:
-        raise Exception(f"无法加载参考图像: {reference_file.path}")
-
-    logging.info(f"参考图尺寸: {ref_img.height}x{ref_img.width}")
-
-    result = detect_circle_quickly(ref_img, hough, strong_denoise=strong_denoise)
-    if not result:
-        logging.warning(f"用户指定参考图像无效: {reference_file.path.name}，将自动选择")
-    return result
-
-
 def auto_select_reference(
     input_files: Iterable[ImageFile],
     hough: HoughParams,
     strong_denoise: bool = False,
-) -> tuple[Circle, ImageFile] | None:
-    """
-    自动选择参考图像（扫描前N张质量最好的）
+) -> ImageFile | None:
 
-    Args:
-        image_files: 图像文件列表
-        input_dir: 输入目录路径
-        hough: 霍夫变换参数
-        progress_callback: 进度回调函数
-        strong_denoise: 是否使用强去噪
-
-    Returns:
-        tuple: (reference_image, reference_circle, reference_filename, best_quality)
-    """
-
-    best_result: DetectionResult | None = None
     reference_file: ImageFile | None = None
 
-    logging.info(f"自动选择参考图像 (扫描前{MAX_SCAN_COUNT}张)...")
+    logging.info(f"自动选择参考图像...")
+    min_distance_to_center = math.inf
+    best_image_file = None
+    # 选择位置最靠近中心的
+    for input_file in input_files:
 
-    for i, input_file in enumerate(input_files):
-        if i >= MAX_SCAN_COUNT:
-            break
         img = input_file.image
         if not img:
             continue
 
-        result = detect_circle_quickly(img, hough, strong_denoise=strong_denoise)
-        if not result:
+        circle = detect_circle_quick(img, hough, strong_denoise=strong_denoise)
+        if not circle:
             continue
-        if not best_result:
-            best_result = result
+        center = Point(img.width / 2, img.height / 2)
+        distance_to_center = (circle.center - center).norm()
+        if not best_image_file or distance_to_center < min_distance_to_center:
+            best_image_file = input_file
             reference_file = input_file
-        elif result.quality > best_result.quality:
-            best_result = result
-            reference_file = input_file
-    if not best_result or not reference_file:
+            min_distance_to_center = distance_to_center
+    if not reference_file:
+        logging.error("未能找到合适的参考图像")
         return None
-    logging.info(
-        f"🎯 最终参考图像: {reference_file.path.name}, 质量评分={best_result.quality:.1f}"
-    )
-    return best_result.circle, reference_file
+    logging.info(f"🎯 最终参考图像: {reference_file.path.name}")
+    return best_image_file
 
 
-def get_reference(
+def get_user_reference_circle(
+    reference_path: Path,
+    input_files: dict[Path, ImageFile],
+    hough: HoughParams,
+    strong_denoise: bool,
+) -> Circle | None:
+
+    if reference_path not in input_files:
+        logging.error(f"指定的参考图像 {reference_path} 不在输入目录中")
+        return None
+    reference_file = input_files[reference_path]
+    if not reference_file.image:
+        logging.error(f"无法加载指定的参考图像 {reference_path}")
+        return None
+    ref_circle = detect_circle(reference_file.image, hough, strong_denoise)
+    if not ref_circle:
+        logging.error(f"未能在指定的参考图像 {reference_path} 中检测到月食圆")
+        return None
+    return ref_circle
+
+
+def get_reference_circle(
     reference_path: Path | None,
     input_files: dict[Path, ImageFile],
     hough: HoughParams,
     strong_denoise: bool,
 ) -> tuple[Circle, ImageFile] | None:
     logging.info("阶段 1/2: 确定参考图像...")
-    if reference_path and reference_path in input_files:
-        reference_file = input_files[reference_path]
-        result = load_user_reference(reference_file, hough, strong_denoise)
-        if result:
-            return result.circle, reference_file
-    return auto_select_reference(
+    if reference_path:
+        user_ref_circle = get_user_reference_circle(
+            reference_path, input_files, hough, strong_denoise
+        )
+        if user_ref_circle:
+            return user_ref_circle, input_files[reference_path]
+
+    reference_file = auto_select_reference(
         input_files.values(),
         hough,
         strong_denoise,
     )
+    if not reference_file:
+        return None
+    assert reference_file.image
+    ref_circle = detect_circle(
+        reference_file.image,
+        hough,
+        strong_denoise=strong_denoise,
+    )
+    if not ref_circle:
+        logging.error("未能在参考图像中检测到月食圆")
+        return None
+    return ref_circle, reference_file
 
 
 def align(img: Image, shift: Vector[float]) -> Image:
@@ -259,29 +192,25 @@ def process_single_image(
     strong_denoise: bool = False,
 ):
 
-    t_det = time.time()
+    start_time = time.time()
     input_image = input_file.image
     if input_image is None:
         return None
-    result = detect_circle(
+    circle = detect_circle(
         input_image,
         hough,
         strong_denoise=strong_denoise,
         prev_circle=last_circle,
     )
-    dt_det = time.time() - t_det
-
-    if result is None:
-        logging.error(f"  ✗ {input_file.path.name}: 圆检测失败(耗时 {dt_det:.2f}s)")
+    logging.info(f"处理{input_file.path.name}耗时 {time.time()-start_time:.2f}s")
+    if not circle:
         return None
-    else:
-        logging.info(
-            f"  ○ {input_file.path.name}: 圆检测成功 (质量={result.quality:.1f}, 半径={result.circle.radius:.1f}px, 耗时 {dt_det:.2f}s)"
-        )
 
-    shift = ref_circle.center - result.circle.center
-    output_image = align(input_image, shift)
+    shift = ref_circle.center - circle.center
+
     logging.info(f"初始对齐: shift=({shift.x:.1f},{shift.y:.1f})")
+    output_image = align(input_image, shift)
+
     refined_shift = detect_refined_shift(
         output_image, ref_image, ref_circle, use_advanced_alignment
     )
@@ -296,7 +225,7 @@ def process_single_image(
     output_file.image = output_image
     output_file.save()
 
-    return result.circle
+    return circle
 
 
 # ------------------ 主流程 ------------------
@@ -323,13 +252,14 @@ def process_images(
     input_files = ImageFile.load(input_dir)
 
     # 记录基本信息
-    logging.info(f"月食圆面对齐工具 V{VERSION} - 增量处理版")
     logging.info(f"处理模式: 增量处理 (边检测边保存)")
     logging.info(f"文件总数: {len(input_files)}")
     logging.info(f"多ROI精配准: {'启用' if use_advanced_alignment else '禁用'}")
 
     # 3. 选择参考图像
-    if not (rt := get_reference(reference_path, input_files, hough, strong_denoise)):
+    if not (
+        rt := get_reference_circle(reference_path, input_files, hough, strong_denoise)
+    ):
         logging.error("未能确定参考图像，处理终止")
         return
     ref_circle, ref_file = rt
@@ -347,6 +277,14 @@ def process_images(
     last_circle: Circle | None = ref_circle
 
     for input_file in input_files.values():
+        if input_file == ref_file:
+            # 参考图像直接复制到输出目录
+            output_file = ImageFile(output_dir / f"{input_file.path.name}", mode="w")
+            output_file.image = ref_file.image
+            output_file.save()
+            success_count += 1
+            new_last_circle = ref_circle
+            continue
 
         # 处理单个图像
         new_last_circle = process_single_image(

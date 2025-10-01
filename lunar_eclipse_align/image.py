@@ -9,7 +9,7 @@ from numpy.typing import NDArray
 
 import gc
 
-from utils import SUPPORTED_EXTS
+from lunar_eclipse_align.utils import SUPPORTED_EXTS
 
 
 class Image:
@@ -30,7 +30,7 @@ class Image:
         icc: bytes | None = None,
     ):
 
-        if rgb:
+        if rgb is not None:
             self.rgb = rgb
         elif bgr is not None:
             self.rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
@@ -45,13 +45,13 @@ class Image:
         """从文件加载图像"""
         try:
             pil_image = PILImage.open(file_path)
-            exif: PILImage.Exif = pil_image.getexif()
-            icc: bytes | None = pil_image.info.get("icc_profile", None)
-            rgb = np.array(pil_image)
-            return Image(rgb=rgb, exif=exif, icc=icc)
         except Exception as e:
             logging.error(f"无法加载图像 {file_path}: {e}")
             return None
+        exif: PILImage.Exif = pil_image.getexif()
+        icc: bytes | None = pil_image.info.get("icc_profile", None)
+        rgb = np.array(pil_image)
+        return Image(rgb=rgb, exif=exif, icc=icc)
 
     def save(self, file_path: Path) -> bool:
         """保存图像到文件"""
@@ -106,6 +106,13 @@ class Image:
 
 
 class ImageFile:
+    """
+    图像文件的包装类，支持按需加载和保存
+    通过 mode 参数控制读写模式：
+    - "r": 只读模式，按需加载图像
+    - "w": 写入模式，允许设置和保存图像
+    """
+
     _image: Image | None = None
     _path: Path
     _mode: Literal["r"] | Literal["w"]
@@ -154,3 +161,8 @@ class ImageFile:
         if self._image is None:
             raise ValueError("没有图像数据可保存")
         return self._image.save(self._path)
+
+
+if __name__ == "__main__":
+    # 测试代码
+    image = Image.from_file(Path("tests/test_images/basic/DSC_3551.tif"))

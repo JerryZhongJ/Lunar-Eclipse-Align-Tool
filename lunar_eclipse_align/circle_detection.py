@@ -2,21 +2,20 @@ from enum import Enum
 
 import logging
 
-
 import numpy as np
 import cv2
 from numpy._typing._array_like import NDArray
 
-from image import Image
-from utils import (
+from lunar_eclipse_align.image import Image
+from lunar_eclipse_align.utils import (
+    THUMB_SIZE,
     Circle,
-    DetectionResult,
     HoughParams,
     PointArray,
-    Vector,
     VectorArray,
     ring_mask,
     soft_disk_mask,
+    touches_border,
 )
 from skimage.measure import CircleModel, ransac
 
@@ -123,6 +122,7 @@ def remove_stars_small(gray: NDArray):
 def edge_points_outer_rim(
     gray: np.ndarray, prev_circle: Circle | None = None
 ) -> PointArray | None:
+    # Canny 边缘检测
     edges = cv2.Canny(gray, 50, 150)
     ys, xs = np.nonzero(edges)
     if len(xs) == 0:
@@ -225,9 +225,6 @@ def build_analysis_mask(
         return np.zeros(shape, dtype=bool)
 
 
-# 兼容 UI 中的优先调用名
-build_analysis_mask_ui = build_analysis_mask
-
 # ============== 主检测（供 pipeline 调用） ==============
 
 
@@ -268,9 +265,9 @@ def hough_on_thumb_detect(masked_gray: NDArray, params: HoughParams) -> list[Cir
     height, width = masked_gray.shape[:2]
     max_side = max(height, width)
     circles = []
-    if max_side <= 1800:
+    if max_side <= THUMB_SIZE:
         return []
-    scale = 1800.0 / max_side
+    scale = THUMB_SIZE / max_side
     small_height, small_width = int(height * scale), int(width * scale)
     small = cv2.resize(
         masked_gray,
@@ -553,26 +550,25 @@ def detect_circle(
     params: HoughParams,
     strong_denoise=False,
     prev_circle: Circle | None = None,
-) -> DetectionResult | None:
+) -> Circle | None:
     """
     主检测函数 - 重构后的协调器版本
 
     将原本的单体大函数拆分为多个职责明确的辅助函数
     """
 
-    best_result: DetectionResult | None = None
-
+    best_circle: Circle | None = None
+    best_quality: float = 0.0
     # 1. 设置检测环境
     gray, brightness_mode = initial_process(img, strong_denoise)
 
     def update_best(circles: list[Circle]):
-        nonlocal best_result, gray
+        nonlocal best_circle, best_quality, gray
         for c in circles:
             quality = evaluate_circle_quality(img, c)
-            if not best_result:
-                best_result = DetectionResult(c, quality)
-            elif quality > best_result.quality:
-                best_result = DetectionResult(c, quality)
+            if not best_circle or quality > best_quality:
+                best_circle = c
+                best_quality = quality
 
     # 2. 构建检测ROI
     masked_gray = build_detection_roi(
@@ -580,7 +576,7 @@ def detect_circle(
         params,
         prev_circle,
     )
-    update_best(hough_on_thumb_detect(masked_gray, params))
+    # update_best(hough_on_thumb_detect(masked_gray, params))
     # 3. 尝试稳健RANSAC检测
     update_best(detect_circle_robust(gray))
 
@@ -596,11 +592,11 @@ def detect_circle(
     update_best(standard_hough_detect(masked_gray, params))
 
     # 6. 尝试自适应霍夫检测
-    if not best_result or best_result.quality < 15:
+    if not best_circle or best_quality < 15:
         update_best(adaptive_hough_detect(masked_gray, params, brightness_mode))
 
     # —— 轮廓备选 —— #
-    if not best_result or best_result.quality < 10:
+    if not best_circle or best_quality < 10:
         update_best(contour_detect(gray, params))
 
     # —— padding-based fallback —— #
@@ -613,16 +609,44 @@ def detect_circle(
     #         return best_circle, processed, best_score
 
     if (
-        not best_result
-        or (best_result.quality < 10)
-        or touches_border(img.width, img.height, best_result.circle)
+        not best_circle
+        or (best_quality < 10)
+        or touches_border(img.width, img.height, best_circle)
     ):
         update_best(padding_fallback_detect(gray, params))
 
-    if best_result and not (
-        params.minRadius <= best_result.circle.radius <= params.maxRadius
-    ):
+    if best_circle and not (params.minRadius <= best_circle.radius <= params.maxRadius):
         # —— 最终半径窗口一致性检查（严格遵守 UI 设定） —— #
         update_best(final_detect(gray, params))
 
-    return best_result
+    if not best_circle:
+        logging.error(f"  ✗ 圆检测失败")
+        return None
+
+    logging.info(
+        f"  ○  圆检测成功 (质量={best_quality:.1f}, 半径={best_circle.radius:.1f}px"
+    )
+
+    return best_circle
+
+
+def detect_circle_quick(
+    img: Image, params: HoughParams, strong_denoise=False
+) -> Circle | None:
+
+    gray, brightness_mode = initial_process(img, strong_denoise)
+
+    # 2. 构建检测ROI
+    masked_gray = build_detection_roi(
+        gray,
+        params,
+        None,
+    )
+    circles = hough_on_thumb_detect(masked_gray, params)
+    # TODO: add gate
+    best_circle = max(
+        circles,
+        key=lambda c: evaluate_circle_quality(img, c),
+        default=None,
+    )
+    return best_circle

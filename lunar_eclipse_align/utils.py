@@ -23,7 +23,7 @@ SUPPORTED_EXTS = {"*.tif", "*.tiff", "*.bmp", "*.png", "*.jpg", "*.jpeg"}
 MAX_IMAGES_IN_MEMORY = 10
 MEMORY_THRESHOLD_MB = 500
 MAX_SCAN_COUNT = 10
-MAX_SIDE = 1600  # 图像最长边缩略尺寸
+THUMB_SIZE = 1600  # 图像最长边缩略尺寸
 MAX_REFINE_DELTA_PX = 6.0
 MIN_MEAN_ZNCC = 0.55
 MIN_INLIERS = 6
@@ -64,14 +64,29 @@ def to_display_rgb(img: np.ndarray) -> np.ndarray:
 CordType = TypeVar("CordType", int, float)
 
 
-@dataclass(frozen=True)
-class Positioned(ABC, Generic[CordType]):
-    x: CordType
-    y: CordType
+class Point(Generic[CordType]):
+    _x: CordType
+    _y: CordType
 
+    def __init__(self, x: CordType, y: CordType):
+        self._x = x
+        self._y = y
 
-@dataclass(frozen=True)
-class Point(Positioned[CordType]):
+    @property
+    def x(self) -> CordType:
+        return self._x
+
+    @property
+    def y(self) -> CordType:
+        return self._y
+
+    def __hash__(self) -> int:
+        return hash((self._x, self._y))
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, Point):
+            return False
+        return self._x == other._x and self._y == other._y
 
     def __add__(self, delta: "Vector[CordType]") -> "Point[CordType]":
         return Point(self.x + delta.x, self.y + delta.y)
@@ -98,34 +113,79 @@ ORIGIN = Point(0.0, 0.0)
 ORIGIN_I = Point(0, 0)
 
 
-@dataclass(frozen=True)
 class Boundary(Generic[CordType]):
-    min_x: CordType
-    max_x: CordType
-    min_y: CordType
-    max_y: CordType
+    _min_x: CordType
+    _max_x: CordType
+    _min_y: CordType
+    _max_y: CordType
+
+    def __init__(
+        self, min_x: CordType, max_x: CordType, min_y: CordType, max_y: CordType
+    ):
+        self._min_x = min_x
+        self._max_x = max_x
+        self._min_y = min_y
+        self._max_y = max_y
+
+    def __hash__(self) -> int:
+        return hash((self._min_x, self._max_x, self._min_y, self._max_y))
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, Boundary):
+            return False
+        return (
+            self._min_x == other._min_x
+            and self._max_x == other._max_x
+            and self._min_y == other._min_y
+            and self._max_y == other._max_y
+        )
 
     def bound(self, point: "Point[CordType]") -> "BoundedPoint[CordType]":
         x = point.x
         y = point.y
-        if x < self.min_x:
-            x = self.min_x
-        if x > self.max_x:
-            x = self.max_x
-        if y < self.min_y:
-            y = self.min_y
-        if y > self.max_y:
-            y = self.max_y
-        return BoundedPoint(x, y, boundary=self)
+        if x < self._min_x:
+            x = self._min_x
+        if x > self._max_x:
+            x = self._max_x
+        if y < self._min_y:
+            y = self._min_y
+        if y > self._max_y:
+            y = self._max_y
+        bp = BoundedPoint()
+        bp._x = x
+        bp._y = y
+        bp._boundary = self
+        return bp
 
 
-@dataclass(frozen=True)
-class BoundedPoint(Positioned[CordType]):
-    boundary: Boundary[CordType]
+class BoundedPoint(Generic[CordType]):
+    _x: CordType
+    _y: CordType
+    _boundary: Boundary[CordType]
+
+    @property
+    def x(self) -> CordType:
+        return self._x
+
+    @property
+    def y(self) -> CordType:
+        return self._y
+
+    def __hash__(self) -> int:
+        return hash((self._x, self._y, self._boundary))
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, BoundedPoint):
+            return False
+        return (
+            self._x == other._x
+            and self._y == other._y
+            and self._boundary == other._boundary
+        )
 
     def __add__(self, delta: "Vector[CordType]") -> "BoundedPoint[CordType]":
-        p = Point(self.x + delta.x, self.y + delta.y)
-        return self.boundary.bound(p)
+        p = Point(self._x + delta.x, self._y + delta.y)
+        return self._boundary.bound(p)
 
     @overload
     def __sub__(self, other: "BoundedPoint[CordType]") -> "Vector[CordType]": ...
@@ -136,9 +196,9 @@ class BoundedPoint(Positioned[CordType]):
     ) -> "Vector[CordType] | BoundedPoint[CordType]":
         if isinstance(other, Vector):
             p = Point(self.x - other.x, self.y - other.y)
-            return self.boundary.bound(p)
+            return self._boundary.bound(p)
         else:
-            if self.boundary != other.boundary:
+            if self._boundary != other._boundary:
                 raise Exception(
                     "Cannot subtract BoundedPoints with different boundaries"
                 )
@@ -184,9 +244,30 @@ class PointArray:
         return PointArray(self._arr[mask], safe=False)
 
 
-@dataclass(frozen=True)
-class Vector(Positioned[CordType]):
+class Vector(Generic[CordType]):
+    _x: CordType
+    _y: CordType
     dataType2 = TypeVar("dataType2", int, float)
+
+    def __init__(self, x: CordType, y: CordType):
+        self._x = x
+        self._y = y
+
+    @property
+    def x(self) -> CordType:
+        return self._x
+
+    @property
+    def y(self) -> CordType:
+        return self._y
+
+    def __hash__(self) -> int:
+        return hash((self._x, self._y))
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, Vector):
+            return False
+        return self._x == other._x and self._y == other._y
 
     @staticmethod
     def from_ndarray(arr: NDArray, dataType: Type[dataType2]) -> "Vector[dataType2]":
@@ -313,9 +394,33 @@ class VectorArray:
         return VectorArray(self._arr[mask], safe=False)
 
 
-@dataclass(frozen=True)
-class Circle(Positioned[float]):
-    radius: float
+class Circle:
+    _center: Point[float]
+    _radius: float
+
+    def __init__(self, x: float, y: float, radius: float):
+        self._center = Point(x, y)
+        self._radius = radius
+
+    @property
+    def x(self) -> float:
+        return self._center.x
+
+    @property
+    def y(self) -> float:
+        return self._center.y
+
+    @property
+    def radius(self) -> float:
+        return self._radius
+
+    def __hash__(self) -> int:
+        return hash((self._center, self._radius))
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, Circle):
+            return False
+        return self._center == other._center and self._radius == other._radius
 
     @staticmethod
     def from_ndarray(arr: NDArray) -> "Circle":
@@ -323,38 +428,71 @@ class Circle(Positioned[float]):
         return Circle(float(arr[0]), float(arr[1]), float(arr[2]))
 
     def scale(self, factor: float) -> "Circle":
-        return Circle(self.x * factor, self.y * factor, self.radius * factor)
+        return Circle(
+            self._center.x * factor, self._center.y * factor, self._radius * factor
+        )
 
     def shift(self, v: Vector[float]) -> "Circle":
-        return Circle(self.x + v.x, self.y + v.y, self.radius)
+        return Circle(self._center.x + v.x, self._center.y + v.y, self._radius)
 
     @property
     def center(self) -> Point[float]:
-        return Point(self.x, self.y)
+        return self._center
 
 
-@dataclass(frozen=True)
-class ROI(Positioned[int]):
-    w: int
-    h: int
-    score: float = 0.0  # 可选的置信度评分
+class ROI:
+    _start_point: Point[int]
+    _width: int
+    _height: int
+    score: float = 0.0
+
+    def __init__(self, x: int, y: int, width: int, height: int):
+        self._start_point = Point(x, y)
+        self._width = width
+        self._height = height
+
+    @property
+    def x(self) -> int:
+        return self._start_point.x
+
+    @property
+    def y(self) -> int:
+        return self._start_point.y
+
+    @property
+    def width(self) -> int:
+        return self._width
+
+    @property
+    def height(self) -> int:
+        return self._height
+
+    def __hash__(self) -> int:
+        return hash((self._start_point, self._width, self._height))
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, ROI):
+            return False
+        return (
+            self._start_point == other._start_point
+            and self._width == other._width
+            and self._height == other._height
+        )
 
     @property
     def size(self) -> Vector[int]:
-        return Vector(self.w, self.h)
+        return Vector(self._width, self._height)
 
     @property
     def center(self) -> Point[float]:
-        return Point(self.x + self.w / 2.0, self.y + self.h / 2.0)
+        return Point(
+            self._start_point.x + self._width / 2.0,
+            self._start_point.y + self._height / 2.0,
+        )
 
     @property
-    def position(self) -> Point[int]:
-        return Point(self.x, self.y)
-
-
-class DetectionResult(NamedTuple):
-    circle: Circle
-    quality: float
+    def start_point(self) -> Point[int]:
+        return self._start_point
 
 
 @lru_cache(maxsize=32)

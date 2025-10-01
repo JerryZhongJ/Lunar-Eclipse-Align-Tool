@@ -34,17 +34,14 @@ from PySide6.QtCore import (
 
 
 # 导入工具函数
-from pipeline import process_images
-from utils import (
+from lunar_eclipse_align.pipeline import process_images
+from lunar_eclipse_align.utils import (
     SUPPORTED_EXTS,
     SYSTEM,
     HoughParams,
 )
 
-# 导入算法模块
-
-
-from version import VERSION
+from lunar_eclipse_align.ui_windows import PreviewWindow, DebugWindow, ProgressWindow
 
 
 # 定义信号用于线程间通信
@@ -379,7 +376,7 @@ class UniversalLunarAlignApp(QMainWindow):
     def _set_initial_log_message(self):
         """设置初始日志信息"""
         welcome = (
-            f"欢迎使用月食圆面对齐工具 V{VERSION} - 集成版 By @正七价的氟离子\n"
+            f"欢迎使用月食圆面对齐工具 By @正七价的氟离子\n"
             f"运行平台: {SYSTEM}\n"
             "================================================================\n\n"
             "算法说明：\n"
@@ -575,7 +572,3 @@ class UniversalLunarAlignApp(QMainWindow):
         """显示关于作者窗口"""
         # TODO: 实现关于作者窗口
         QMessageBox.information(self, "关于作者", "关于作者功能正在开发中...")
-
-
-# 导入其他窗口类
-from ui_windows import DebugWindow, PreviewWindow, ProgressWindow

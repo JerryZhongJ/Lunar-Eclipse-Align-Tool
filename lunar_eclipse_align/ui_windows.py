@@ -10,11 +10,12 @@ import queue
 import numpy as np
 from typing import TYPE_CHECKING
 
-from image import ImageFile
-from ui import UniversalLunarAlignApp
+from lunar_eclipse_align.circle_detection import build_analysis_mask
+
+from lunar_eclipse_align.image import ImageFile
 
 if TYPE_CHECKING:
-    from ui import UniversalLunarAlignApp
+    from lunar_eclipse_align.main_window import UniversalLunarAlignApp
 
 from PySide6.QtWidgets import (
     QDialog,
@@ -24,7 +25,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSpinBox,
-    QSlider,
     QCheckBox,
     QProgressBar,
     QFileDialog,
@@ -50,19 +50,18 @@ from PySide6.QtGui import (
 import cv2
 
 # 导入工具函数
-from utils import (
+from lunar_eclipse_align.utils import (
     SUPPORTED_EXTS,
     HoughParams,
 )
-import circle_detection as _algo_circle
 
 
 class DebugWindow(QDialog):
     """调试窗口：可选择样张并实时调节参数"""
 
-    def __init__(self, app_controller: UniversalLunarAlignApp):
+    def __init__(self, app_controller: "UniversalLunarAlignApp"):
         super().__init__(app_controller)
-        self.app: UniversalLunarAlignApp = app_controller
+        self.app: "UniversalLunarAlignApp" = app_controller
         self.setWindowTitle("调试窗口（参数实时预览）")
         self.resize(980, 680)
         self.setMinimumSize(760, 520)
@@ -288,18 +287,16 @@ class DebugWindow(QDialog):
         try:
             # 尝试使用ui版本的掩膜构建
             try:
-                return _algo_circle.build_analysis_mask_ui(
-                    gray, brightness_min=3 / 255.0
-                )
+                return build_analysis_mask(gray, brightness_min=3 / 255.0)
             except AttributeError:
                 pass
 
             # 尝试新签名
             try:
-                return _algo_circle.build_analysis_mask(gray, brightness_min=3 / 255.0)
+                return build_analysis_mask(gray, brightness_min=3 / 255.0)
             except TypeError:
                 # 旧签名
-                return _algo_circle.build_analysis_mask(gray)
+                return build_analysis_mask(gray)
         except Exception:
             # 回退：返回零掩膜
             return np.zeros_like(gray, dtype="uint8")
@@ -435,9 +432,9 @@ class DebugWindow(QDialog):
 class PreviewWindow(QDialog):
     """预览窗口"""
 
-    def __init__(self, app_controller: UniversalLunarAlignApp):
+    def __init__(self, app_controller: "UniversalLunarAlignApp"):
         super().__init__(app_controller)
-        self.app: UniversalLunarAlignApp = app_controller
+        self.app: "UniversalLunarAlignApp" = app_controller
         self.setWindowTitle("预览与半径估计")
         self.resize(1100, 650)
         self.setMinimumSize(900, 500)

@@ -1,13 +1,10 @@
-from dataclasses import dataclass
-from functools import lru_cache
 import itertools
 import logging
 import cv2
 import numpy as np
-import math
 import time
-from image import Image
-from utils import (
+from lunar_eclipse_align.image import Image
+from lunar_eclipse_align.utils import (
     MAX_REFINE_DELTA_PX,
     MIN_INLIERS,
     MIN_MEAN_ZNCC,
@@ -54,11 +51,11 @@ def match_roi_zncc_local(
     Uses TM_CCORR_NORMED with optional template mask (same size as ref_patch).
     Returns (dx, dy, score).
     """
-    h, w = roi.h, roi.w
+    h, w = roi.height, roi.width
     H, W = tgtF.shape[:2]
 
     # target search window centered at the ref patch center
-    c: Point[int] = roi.position + Vector(w // 2, h // 2)
+    c: Point[int] = roi.start_point + Vector(w // 2, h // 2)
     pos0: Point[int] = Point(
         max(0, c.x - w // 2 - search), max(0, c.y - h // 2 - search)
     )
@@ -192,7 +189,7 @@ def collect_roi_matches(
         if time.perf_counter() - t_start > time_budget_sec:
             break
 
-        refF_patch = refF[roi.y : roi.y + roi.h, roi.x : roi.x + roi.w]
+        refF_patch = refF[roi.y : roi.y + roi.height, roi.x : roi.x + roi.width]
 
         # —— 过滤过暗/低纹理 ROI（避免落在阴影/背景）——
         mean = float(refF_patch.mean())
@@ -205,7 +202,7 @@ def collect_roi_matches(
 
         min_bright, max_bright = 30, 220
         ref_block8 = ref_img.normalized_gray[
-            roi.y : roi.y + roi.h, roi.x : roi.x + roi.w
+            roi.y : roi.y + roi.height, roi.x : roi.x + roi.width
         ]
         mask_patch = (min_bright <= ref_block8 <= max_bright) * np.uint8(255)
         if mask_patch.size > 0:
@@ -295,8 +292,8 @@ def robust_estimate(
 
 
 def too_close(a: ROI, b: ROI) -> bool:
-    min_w = min(a.w, b.w) // 2
-    min_h = min(a.h, b.h) // 2
+    min_w = min(a.width, b.width) // 2
+    min_h = min(a.height, b.height) // 2
     return (abs(a.x - b.x) < min_w) and (abs(a.y - b.y) < min_h)
 
 
@@ -322,13 +319,12 @@ def select_rois(
     step = max(24, box // 2)  # stride to reduce overlap
     integ = cv2.integral(energy.astype(np.float32))
 
-    def add_score_to(roi: ROI):
-        x, y, w, h = roi.x, roi.y, roi.w, roi.h
+    def calc_score(roi: ROI) -> float:
+        x, y, w, h = roi.x, roi.y, roi.width, roi.height
         sum_rect = float(
             integ[y + h, x + w] - integ[y, x + w] - integ[y + h, x] + integ[y, x]
         )
-        score = sum_rect / (roi.w * roi.h + 1e-6)
-        return ROI(x, y, w, h, score)
+        return sum_rect / (roi.width * roi.height + 1e-6)
 
     for y, x in itertools.product(
         range(margin, h - margin - box, step), range(margin, w - margin - box, step)
@@ -340,7 +336,8 @@ def select_rois(
 
         if ref_gray is None:
             roi = ROI(x, y, box, box)
-            rois.append(add_score_to(roi))
+            roi.score = calc_score(roi)
+            rois.append(roi)
             continue
 
         roi_gray = ref_gray[y : y + box, x : x + box]
@@ -369,7 +366,8 @@ def select_rois(
         if submask.mean() < 0.6:
             continue
         roi = ROI(x, y, local_box, local_box)
-        rois.append(add_score_to(roi))
+        roi.score = calc_score(roi)
+        rois.append(roi)
 
     rois.sort(key=lambda t: t.score, reverse=True)
 
@@ -392,7 +390,7 @@ def make_multi_roi_shift(
     search: int | None = None,
     time_budget_sec=1.2,
 ) -> Vector[float] | None:
-    start_time = time.time()
+
     # 自适应/裁剪 ROI 数量与大小，避免过多卷积
     n_rois = clip(n_rois if n_rois else int(circle.radius // 70), 8, 24)
     roi_size = clip(roi_size if roi_size else int(circle.radius * 0.18), 64, 128)
@@ -422,7 +420,7 @@ def make_multi_roi_shift(
 
     if not rois:
         return None
-    sizes = [roi.w for roi in rois]
+    sizes = [roi.width for roi in rois]
     logging.debug(
         f"[Refine] 自适应ROI统计: 平均={np.mean(sizes):.0f}, 最小={np.min(sizes)}, 最大={np.max(sizes)}"
     )
@@ -469,9 +467,7 @@ def make_multi_roi_shift(
     logging.debug(
         f"[Refine] 内点={cnt}/{num_centers}, 平移=({shift.x:.2f},{shift.y:.2f}), meanZNCC={mean_zncc:.2f}, score={score:.3f}"
     )
-    logging.info(
-        f"    [Refine] score={score:.3f}, inliers={int(cnt)}, roi_init≈{roi_size}, t={time.time() - start_time:.2f}s"
-    )
+    logging.info(f"[Refine] score={score:.3f}, inliers={int(cnt)}, roi_init≈{roi_size}")
     return shift
 
 

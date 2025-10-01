@@ -40,16 +40,7 @@ dependencies = [
 ]
 
 [project.scripts]
-lunar-eclipse-align = "main:main"
-
-[tool.setuptools]
-package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.dynamic]
-version = {attr = "version.VERSION"}
+lunar-eclipse-align = "lunar_eclipse_align.main:main"
 
 # Black 代码格式化配置
 [tool.black]
