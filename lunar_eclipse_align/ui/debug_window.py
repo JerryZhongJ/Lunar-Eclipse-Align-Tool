@@ -3,49 +3,38 @@ import os
 from pathlib import Path
 import threading
 import queue
+import cv2
 import numpy as np
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterator
 
 from lunar_eclipse_align.core.circle_detection import build_analysis_mask, detect_circle
 
-from lunar_eclipse_align.utils.image import ImageFile
-from lunar_eclipse_align.utils.constants import SUPPORTED_EXTS
-from lunar_eclipse_align.utils.data_types import HoughParams
+from lunar_eclipse_align.utils.data_types import Circle
+from lunar_eclipse_align.utils.image import Image, ImageFile
+
 
 if TYPE_CHECKING:
     from lunar_eclipse_align.ui.main_window import UniversalLunarAlignApp
-
+from numpy.typing import NDArray
 from PySide6.QtWidgets import (
     QDialog,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QSpinBox,
     QCheckBox,
-    QProgressBar,
-    QFileDialog,
-    QMessageBox,
     QGraphicsView,
     QGraphicsScene,
-    QGraphicsItem,
-    QGraphicsRectItem,
-    QGraphicsEllipseItem,
-    QApplication,
 )
 from PySide6.QtCore import (
     Qt,
     QTimer,
 )
 from PySide6.QtGui import (
-    QFont,
     QPixmap,
     QImage,
     QColor,
     QPen,
     QBrush,
-    QCursor,
 )
 
 # 导入工具函数
@@ -62,33 +51,18 @@ class DebugWindow(QDialog):
         self.setMinimumSize(760, 520)
 
         # 图像数据
-        self.preview_img_cv = None
-        self.preview_gray_rgb = None
         self.preview_scale = 1.0
+
+        self.current_dir: Path | None = None
+        self.image_file_iterator: Iterator[tuple[Path, ImageFile]] | None = None
         self.current_path: Path | None = None
-
-        # 调试计算控制
-        self._dbg_queue = queue.Queue()
-        self._dbg_worker = None
-        self._dbg_cancel = threading.Event()
-        self._dbg_job_id = 0
-        self._dbg_busy = False
-        self._dbg_pending = False
-        self._last_det = None
-
-        # 参数变量
-        self.hough = HoughParams(
-            minRadius=300,
-            maxRadius=800,
-            param1=50,
-            param2=30,
-        )
+        self.current_img: Image | None = None
+        self.image_files: dict[Path, ImageFile] = {}
 
         self.show_mask: bool = False
 
         self._setup_ui()
         self._center_window()
-        self._start_polling()
 
     def _center_window(self):
         """居中显示窗口"""
@@ -109,38 +83,6 @@ class DebugWindow(QDialog):
         toolbar1 = QWidget()
         toolbar1_layout = QHBoxLayout(toolbar1)
         toolbar1_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.choose_image_btn = QPushButton("选择样张")
-        self.choose_image_btn.clicked.connect(self.choose_image)
-        toolbar1_layout.addWidget(self.choose_image_btn)
-
-        toolbar1_layout.addWidget(QLabel("最小半径:"))
-        self.min_r_spin = QSpinBox()
-        self.min_r_spin.setRange(1, 4000)
-        self.min_r_spin.setValue(self.min_r)
-        self.min_r_spin.valueChanged.connect(self.on_param_changed)
-        toolbar1_layout.addWidget(self.min_r_spin)
-
-        toolbar1_layout.addWidget(QLabel("最大半径:"))
-        self.max_r_spin = QSpinBox()
-        self.max_r_spin.setRange(1, 5000)
-        self.max_r_spin.setValue(self.max_r)
-        self.max_r_spin.valueChanged.connect(self.on_param_changed)
-        toolbar1_layout.addWidget(self.max_r_spin)
-
-        toolbar1_layout.addWidget(QLabel("参数1:"))
-        self.param1_spin = QSpinBox()
-        self.param1_spin.setRange(1, 200)
-        self.param1_spin.setValue(self.param1)
-        self.param1_spin.valueChanged.connect(self.on_param_changed)
-        toolbar1_layout.addWidget(self.param1_spin)
-
-        toolbar1_layout.addWidget(QLabel("参数2:"))
-        self.param2_spin = QSpinBox()
-        self.param2_spin.setRange(1, 100)
-        self.param2_spin.setValue(self.param2)
-        self.param2_spin.valueChanged.connect(self.on_param_changed)
-        toolbar1_layout.addWidget(self.param2_spin)
 
         layout.addWidget(toolbar1)
 
@@ -163,250 +105,136 @@ class DebugWindow(QDialog):
         self.graphics_view.setBackgroundBrush(QBrush(QColor(34, 34, 34)))
         layout.addWidget(self.graphics_view)
 
-    def on_param_changed(self, value):
-        """参数改变"""
-        self.min_r = self.min_r_spin.value()
-        self.max_r = self.max_r_spin.value()
-        self.param1 = self.param1_spin.value()
-        self.param2 = self.param2_spin.value()
-        self.refresh()
+    def showEvent(self, event):
+        """窗口显示时自动弹出文件选择（仅当没有图像时）"""
+        super().showEvent(event)
+        if self.current_dir != self.app.input_path:
+            self.refresh()
+            self.current_dir = self.app.input_path
+
+        if self.current_img is None:
+            # pick one image in the input directory
+            if not self.current_dir or not self.current_dir.is_dir():
+                return
+            self.image_files = ImageFile.load(self.current_dir)
+            self.image_file_iterator = iter(self.image_files.items())
+            try:
+                self.current_path, img_file = next(self.image_file_iterator)
+                self.current_img = img_file.image
+                self.debug_display_image()
+            except StopIteration:
+                pass
 
     def on_show_mask_changed(self, state):
         """显示分析区域状态改变"""
         self.show_mask = state == Qt.CheckState.Checked.value
-        self.refresh()
+        self.refresh_pixmap()
 
-    def choose_image(self):
-        input_path = self.app.input_path
-        """选择样张图像"""
-        initial_dir = input_path if input_path and input_path.is_dir() else Path()
-        file_filter = f"支持的图像 ( {' '.join(SUPPORTED_EXTS)} );;所有文件 (*.*)"
-
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择调试样张", str(initial_dir), file_filter
+    def debug_display_image(self):
+        if self.current_img is None:
+            return
+        self.refresh_pixmap()
+        circle = detect_circle(
+            self.current_img,
+            self.app.params,
+            strong_denoise=self.app.enable_strong_denoise,
         )
-
-        if file_path:
-            self.current_path = Path(file_path)
-            img = ImageFile(self.current_path).image
-            if img is None:
-                QMessageBox.critical(self, "错误", "无法读取该图像。")
-                return
-
-            self.preview_image = ImageFile(self.current_path).image
-
-            # 设置回主界面
-            self.refresh()
+        if circle:
+            self._draw_circle(circle)
 
     def refresh(self):
+        self.current_dir = None
+        self.image_file_iterator = None
+        self.current_img = None
+        self.current_path = None
+        self.image_files = {}
+
+    def refresh_pixmap(self):
         """刷新显示"""
         self.graphics_scene.clear()
-
-        # 选择底图
-        if self.show_mask:
-            src_rgb = (
-                self.preview_gray_rgb
-                if self.preview_gray_rgb is not None
-                else self.preview_rgb
-            )
-        else:
-            src_rgb = self.preview_rgb
-
-        if src_rgb is None:
-            # 显示提示文字
-            self.graphics_scene.addText("请选择一张样张…").setDefaultTextColor(
-                "lightgray"
-            )
+        if self.current_img is None:
             return
-
-        # 复制底图
-        display_rgb = src_rgb.copy()
-
+        display_rgb = self.current_img.rgb
         # 如果显示分析区域
-        if self.show_mask and self.preview_img_cv is not None:
-            try:
-                gray = (
-                    cv2.cvtColor(self.preview_img_cv, cv2.COLOR_BGR2GRAY)
-                    if self.preview_img_cv.ndim == 3
-                    else self.preview_img_cv
-                )
+        if self.show_mask:
 
-                # 构建分析掩膜
-                mask = self._build_analysis_mask(gray)
-                if mask is not None:
-                    H, W = display_rgb.shape[:2]
-                    if mask.shape != (H, W):
-                        mask = cv2.resize(mask, (W, H), interpolation=cv2.INTER_NEAREST)
+            # 构建分析掩膜
+            mask = build_analysis_mask(self.current_img, brightness_min=3 / 255.0)
 
-                    # 创建红色叠加
-                    red_overlay = display_rgb.copy()
-                    red_overlay[:, :, 0] = 255
-                    red_overlay[:, :, 1] = 0
-                    red_overlay[:, :, 2] = 0
+            W, H = self.current_img.widthXheight
+            if mask.shape != (H, W):
+                mask = cv2.resize(mask, (W, H), interpolation=cv2.INTER_NEAREST)
 
-                    alpha = (mask.astype(np.float32) / 255.0) * 0.35
-                    alpha = alpha[:, :, np.newaxis]
+            # 创建红色叠加
+            red_overlay = self.current_img.rgb.copy()
+            red_overlay[:, :, 0] = 255
+            red_overlay[:, :, 1] = 0
+            red_overlay[:, :, 2] = 0
 
-                    display_rgb = (
-                        display_rgb * (1 - alpha) + red_overlay * alpha
-                    ).astype(np.uint8)
+            alpha = (mask.astype(np.float32) / 255.0) * 0.35
+            alpha = alpha[:, :, np.newaxis]
 
-            except Exception as e:
-                print(f"显示分析区域失败: {e}")
-
+            display_rgb = (
+                self.current_img.rgb * (1 - alpha) + red_overlay * alpha
+            ).astype(np.uint8)
         # 显示图像
-        self._display_image(display_rgb)
+        self.display_pixmap(display_rgb)
 
-        # 叠加检测结果
-        if (
-            self._last_det
-            and isinstance(self._last_det, dict)
-            and self._last_det.get("circle") is not None
-        ):
-            self._draw_detection_result(self._last_det)
-
-    def _build_analysis_mask(self, gray):
-        """构建分析掩膜"""
-        try:
-            # 尝试使用ui版本的掩膜构建
-            try:
-                return build_analysis_mask(gray, brightness_min=3 / 255.0)
-            except AttributeError:
-                pass
-
-            # 尝试新签名
-            try:
-                return build_analysis_mask(gray, brightness_min=3 / 255.0)
-            except TypeError:
-                # 旧签名
-                return build_analysis_mask(gray)
-        except Exception:
-            # 回退：返回零掩膜
-            return np.zeros_like(gray, dtype="uint8")
-
-    def _display_image(self, rgb):
+    def display_pixmap(self, rgb: NDArray):
         """显示图像"""
-        if rgb is None:
-            return
-
-        h, w = rgb.shape[:2]
-        view_size = self.graphics_view.size()
-        scale = min(view_size.width() / w, view_size.height() / h, 1.0)
-
         # 转换为QPixmap
-        q_img = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format.Format_RGB888)
+        H, W, _ = rgb.shape[:2]
+        q_img = QImage(
+            rgb.data,
+            W,
+            H,
+            rgb.strides[0],
+            QImage.Format.Format_RGB888,
+        )
         pixmap = QPixmap.fromImage(q_img)
 
-        # 缩放
+        # 计算缩放
+        view_size = self.graphics_view.size()
+        scale = min(
+            view_size.width() / W,
+            view_size.height() / H,
+            1.0,
+        )
         if scale < 1.0:
             pixmap = pixmap.scaled(
-                int(w * scale),
-                int(h * scale),
+                int(W * scale),
+                int(H * scale),
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
 
-        # 添加到场景
-        pixmap_item = self.graphics_scene.addPixmap(pixmap)
+        # 清除场景并添加新图像
+        self.graphics_scene.addPixmap(pixmap)
         self.preview_scale = scale
 
-    def _draw_detection_result(self, det):
-        """绘制检测结果"""
-        try:
-            cx, cy, r = det["circle"]
+    def _draw_circle(self, circle: Circle):
+        """绘制检测到的圆"""
+        if self.drawed_circle:
+            self.graphics_scene.removeItem(self.drawed_circle)
+            self.drawed_circle = None
+        if self.drawed_center:
+            self.graphics_scene.removeItem(self.drawed_center)
+            self.drawed_center = None
 
-            # 处理缩放
-            scale = self.preview_scale
-            cx *= scale
-            cy *= scale
-            r *= scale
+        # 应用预览缩放
 
-            # 画圆
-            circle = self.graphics_scene.addEllipse(
-                cx - r, cy - r, 2 * r, 2 * r, QPen(QColor(255, 77, 79), 2)
-            )
+        cx, cy, r = circle.x, circle.y, circle.radius
+        # 画圆
+        self.drawed_circle = self.graphics_scene.addEllipse(
+            cx - r, cy - r, 2 * r, 2 * r, QPen(QColor(255, 77, 79), 2)
+        )
 
-            # 画圆心
-            center = self.graphics_scene.addEllipse(
-                cx - 3,
-                cy - 3,
-                6,
-                6,
-                QPen(Qt.PenStyle.NoPen),
-                QBrush(QColor(255, 77, 79)),
-            )
-
-            # 显示状态文本
-            quality = det.get("quality", None)
-            status_text = f"检测到圆 r≈{r:.1f}px"
-            if quality is not None:
-                status_text += f"  quality={quality:.2f}"
-
-            text = self.graphics_scene.addText(status_text)
-            text.setFont(QFont("Arial", 12))
-            text.setDefaultTextColor("lightgray")
-
-        except Exception as e:
-            print(f"绘制检测结果失败: {e}")
-
-    def _start_debug_compute(self):
-        """开始调试计算"""
-        if self.preview_img_cv is None:
-            return
-
-        self._dbg_busy = True
-        self._dbg_pending = False
-        self._dbg_job_id += 1
-        job_id = self._dbg_job_id
-
-        img = self.preview_img_cv.copy()
-
-        # 取消之前的任务
-        if self._dbg_worker and self._dbg_worker.is_alive():
-            self._dbg_cancel.set()
-
-        self._dbg_cancel = threading.Event()
-        self._last_det = None
-
-        def _worker():
-            try:
-                # 执行检测
-                det = self._detect_best(img)
-                if det is not None:
-                    self._dbg_queue.put((job_id, True, det))
-                else:
-                    self._dbg_queue.put((job_id, True, None))
-            except Exception as e:
-                print(f"调试计算失败: {e}")
-                self._dbg_queue.put((job_id, False, None))
-
-        self._dbg_worker = threading.Thread(target=_worker, daemon=True)
-        self._dbg_worker.start()
-
-    def _detect_best(self, img_bgr):
-        """检测最佳圆"""
-        # TODO: 实现圆检测逻辑
-        return None
-
-    def _start_polling(self):
-        """开始轮询结果"""
-        self._poll_debug_results()
-
-    def _poll_debug_results(self):
-        """轮询调试结果"""
-        try:
-            while True:
-                job_id, success, det = self._dbg_queue.get_nowait()
-                if job_id != self._dbg_job_id:
-                    continue  # 过期任务
-
-                self._dbg_busy = False
-                if success:
-                    self._last_det = det
-                    self.refresh()
-                break
-        except queue.Empty:
-            pass
-
-        # 继续轮询
-        QTimer.singleShot(40, self._poll_debug_results)
+        # 画圆心
+        self.drawed_center = self.graphics_scene.addEllipse(
+            cx - 3,
+            cy - 3,
+            6,
+            6,
+            QPen(Qt.PenStyle.NoPen),
+            QBrush(QColor(255, 77, 79)),
+        )

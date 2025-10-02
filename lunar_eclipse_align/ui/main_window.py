@@ -37,6 +37,7 @@ from PySide6.QtCore import (
 from lunar_eclipse_align.core.pipeline import process_images
 
 
+from lunar_eclipse_align.ui.debug_window import DebugWindow
 from lunar_eclipse_align.ui.preview_window import PreviewWindow, ProgressWindow
 from lunar_eclipse_align.utils.constants import SUPPORTED_EXTS, SYSTEM
 from lunar_eclipse_align.utils.data_types import HoughParams
@@ -105,7 +106,6 @@ class UniversalLunarAlignApp(QMainWindow):
         # 初始化变量
 
         self.progress_window = None
-        self.debug_window = None
         self.alignment_thread = None
         self._about_photo = None
         self._qr_photo = None
@@ -128,6 +128,7 @@ class UniversalLunarAlignApp(QMainWindow):
         self._connect_signals()
 
         self.preview_window = PreviewWindow(self)
+        self.debug_window = DebugWindow(self)
 
     def _init_variables(self):
         """初始化变量"""
@@ -317,9 +318,9 @@ class UniversalLunarAlignApp(QMainWindow):
         self.preview_btn.clicked.connect(self.open_preview)
         layout.addWidget(self.preview_btn, 1)
 
-        # self.debug_btn = QPushButton("打开调试窗口（实时参数预览）")
-        # self.debug_btn.clicked.connect(self.open_debug)
-        # layout.addWidget(self.debug_btn, 1)
+        self.debug_btn = QPushButton("打开调试窗口（实时参数预览）")
+        self.debug_btn.clicked.connect(self.open_debug)
+        layout.addWidget(self.debug_btn, 1)
 
         parent_layout.addWidget(group)
 
@@ -449,13 +450,11 @@ class UniversalLunarAlignApp(QMainWindow):
         self.preview_window.raise_()
         self.preview_window.activateWindow()
 
-    # def open_debug(self):
-    #     """打开调试窗口"""
-    #     if self.debug_window is None or not self.debug_window.isVisible():
-    #         self.debug_window = DebugWindow(self)
-    #     self.debug_window.show()
-    #     self.debug_window.raise_()
-    #     self.debug_window.activateWindow()
+    def open_debug(self):
+        """打开调试窗口"""
+        self.debug_window.show()
+        self.debug_window.raise_()
+        self.debug_window.activateWindow()
 
     def _warning_dialog(self, title, message):
         """显示警告对话框"""

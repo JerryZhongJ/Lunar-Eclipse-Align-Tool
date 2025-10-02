@@ -196,11 +196,9 @@ def rough_center_radius(gray: NDArray, min_r: float, max_r: float) -> Circle | N
 
 # ============== UI 调参可视化：分析区域掩膜（仅供显示） ==============
 def build_analysis_mask(
-    img_gray: NDArray,
-    brightness_min=3 / 255.0,
-    min_radius: float | None = None,
-    max_radius: float | None = None,
-):
+    img: Image,
+    brightness_min: float = 3 / 255.0,
+) -> NDArray[np.bool]:
     """
     仅供 UI 调参窗口显示“分析区域”用：
     - uint8 归一化 -> 轻度去噪
@@ -209,30 +207,21 @@ def build_analysis_mask(
     - 仅保留最大连通域
     返回 bool(H,W)。不影响主流程检测。
     """
-    try:
-        g = img_gray.copy()
-        if g.dtype != np.uint8:
-            cv2.normalize(
-                g.astype(np.float32), g, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U
-            )
-        g = cv2.GaussianBlur(g, (3, 3), 0)
-        _, otsu = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        floor_t = max(1, int(round(float(brightness_min) * 255.0)))
-        _, floor = cv2.threshold(g, floor_t, 255, cv2.THRESH_BINARY)
-        m = cv2.bitwise_and(otsu, floor)
-        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        m = cv2.morphologyEx(m, cv2.MORPH_OPEN, k, iterations=1)
-        cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not cnts:
-            return np.zeros_like(m, dtype=bool)
-        c = max(cnts, key=cv2.contourArea)
-        keep = np.zeros_like(m)
-        cv2.drawContours(keep, [c], -1, 255, thickness=cv2.FILLED)
-        return keep.astype(bool)
-    except Exception:
-        # 兜底：整图 False
-        shape = (1, 1) if img_gray is None else img_gray.shape[:2]
-        return np.zeros(shape, dtype=bool)
+    gray = img.normalized_gray
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    floor_t = max(1, int(round(brightness_min * 255.0)))
+    _, floor = cv2.threshold(gray, floor_t, 255, cv2.THRESH_BINARY)
+    m = cv2.bitwise_and(otsu, floor)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, k, iterations=1)
+    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return np.zeros_like(m, dtype=bool)
+    c = max(cnts, key=cv2.contourArea)
+    keep = np.zeros_like(m)
+    cv2.drawContours(keep, [c], -1, 255, thickness=cv2.FILLED)
+    return keep.astype(bool)
 
 
 # ============== 主检测（供 pipeline 调用） ==============

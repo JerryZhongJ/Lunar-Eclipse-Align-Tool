@@ -254,6 +254,7 @@ class PreviewWindow(QDialog):
             self.preview_img = img
 
             self.setWindowTitle(f"预览与半径估计 - {self.current_path.name}")
+            self.refresh()
             self.display_image()
 
     def refresh(self):
@@ -272,13 +273,13 @@ class PreviewWindow(QDialog):
             text = self.graphics_scene.addText("请选择参考图像，在图上拖拽鼠标框选月亮")
             text.setDefaultTextColor(QColor("lightgray"))
             return
-        self.refresh()
-        # 转换为QPixmap
 
+        # 转换为QPixmap
+        W, H = self.preview_img.widthXheight
         q_img = QImage(
             self.preview_img.rgb.data,
-            self.preview_img.width,
-            self.preview_img.height,
+            W,
+            H,
             self.preview_img.rgb.strides[0],
             QImage.Format.Format_RGB888,
         )
@@ -287,14 +288,14 @@ class PreviewWindow(QDialog):
         # 计算缩放
         view_size = self.graphics_view.size()
         scale = min(
-            view_size.width() / self.preview_img.width,
-            view_size.height() / self.preview_img.height,
+            view_size.width() / W,
+            view_size.height() / H,
             1.0,
         )
         if scale < 1.0:
             pixmap = pixmap.scaled(
-                int(self.preview_img.width * scale),
-                int(self.preview_img.height * scale),
+                int(W * scale),
+                int(H * scale),
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
