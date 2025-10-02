@@ -215,7 +215,6 @@ def process_single_image(
     if refined_shift:
         output_image = align(output_image, refined_shift)
 
-    output_image.exif = input_image.exif
     output_image.icc = input_image.icc
     output_file = ImageFile(output_dir / f"{input_file.path.name}", mode="w")
 
