@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from lunar_eclipse_align.core.circle_detection import detect_circle, detect_circle_quick
 
-from lunar_eclipse_align.core.image import Image, ImageFile
+from lunar_eclipse_align.utils.image import Image, ImageFile
 from lunar_eclipse_align.ui.select_rect import InteractiveGraphicsView
 from lunar_eclipse_align.utils.constants import SUPPORTED_EXTS
 from lunar_eclipse_align.utils.data_types import Circle, Vector

@@ -3,7 +3,7 @@ import logging
 import cv2
 import numpy as np
 import time
-from lunar_eclipse_align.core.image import Image
+from lunar_eclipse_align.utils.image import Image
 from lunar_eclipse_align.utils.tools import (
     clip,
     soft_disk_mask,

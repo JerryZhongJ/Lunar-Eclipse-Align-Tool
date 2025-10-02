@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from lunar_eclipse_align.core.circle_detection import build_analysis_mask, detect_circle
 
-from lunar_eclipse_align.core.image import ImageFile
+from lunar_eclipse_align.utils.image import ImageFile
 from lunar_eclipse_align.utils.constants import SUPPORTED_EXTS
 from lunar_eclipse_align.utils.data_types import HoughParams
 
