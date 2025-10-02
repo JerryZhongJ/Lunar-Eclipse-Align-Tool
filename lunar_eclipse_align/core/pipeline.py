@@ -5,7 +5,7 @@ from typing import Iterable
 
 import cv2, numpy as np
 
-from lunar_eclipse_align.core.image import Image, ImageFile
+from lunar_eclipse_align.utils.image import Image, ImageFile
 from lunar_eclipse_align.utils.tools import (
     Circle,
     get_memory_usage_mb,

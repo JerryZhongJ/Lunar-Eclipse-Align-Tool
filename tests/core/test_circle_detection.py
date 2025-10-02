@@ -20,7 +20,7 @@ from lunar_eclipse_align.core.circle_detection import (
     BrightnessMode,
 )
 from lunar_eclipse_align.utils.data_types import HoughParams
-from lunar_eclipse_align.core.image import Image, ImageFile
+from lunar_eclipse_align.utils.image import Image, ImageFile
 from pathlib import Path
 
 

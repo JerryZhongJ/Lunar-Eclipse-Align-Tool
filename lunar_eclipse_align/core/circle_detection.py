@@ -6,7 +6,7 @@ import numpy as np
 import cv2
 from numpy._typing._array_like import NDArray
 
-from lunar_eclipse_align.core.image import Image
+from lunar_eclipse_align.utils.image import Image
 from lunar_eclipse_align.utils.tools import (
     clip,
     ring_mask,
