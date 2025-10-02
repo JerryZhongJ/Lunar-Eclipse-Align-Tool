@@ -39,49 +39,14 @@ dependencies = [
     "scikit-image>=0.25.2"
 ]
 [project.optional-dependencies]
-test = ["pytest>=7.0", "pytest-qt>=4.0", "pytest-cov>=4.0"]
+test = ["pytest>=7.0", "pytest-qt>=4.0", "pytest-cov>=4.0", "pytest-env>=1.1.5"]
+# dev = ["matplotlib>=3.5.0"]
 [project.scripts]
 lunar-eclipse-align = "lunar_eclipse_align.main:main"
 
-# Black 代码格式化配置
-[tool.black]
-line-length = 88
-target-version = ['py38']
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-  # directories
-  \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | build
-  | dist
-)/
-'''
+[tool.setuptools]
+packages = ["lunar_eclipse_align"]
 
-# isort 导入排序配置
-[tool.isort]
-profile = "black"
-multi_line_output = 3
-line_length = 88
-known_first_party = ["utils_common", "algorithms_circle", "algorithms_refine", "ui", "ui_windows", "pipeline"]
-
-# flake8 配置
-[tool.flake8]
-max-line-length = 88
-extend-ignore = ["E203", "W503"]
-exclude = [".git", "__pycache__", "build", "dist", ".eggs"]
-
-# mypy 类型检查配置
-[tool.mypy]
-python_version = "3.8"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = false
-disallow_incomplete_defs = false
 
 # pytest 测试配置
 [tool.pytest.ini_options]
@@ -103,6 +68,9 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
+]
+env = [
+    "DEBUG=1"
 ]
 
 # Coverage 配置

@@ -35,13 +35,11 @@ from PySide6.QtCore import (
 
 # 导入工具函数
 from lunar_eclipse_align.core.pipeline import process_images
-from lunar_eclipse_align.core.utils import (
-    SUPPORTED_EXTS,
-    SYSTEM,
-    HoughParams,
-)
+
 
 from lunar_eclipse_align.ui.preview_window import PreviewWindow, ProgressWindow
+from lunar_eclipse_align.utils.constants import SUPPORTED_EXTS, SYSTEM
+from lunar_eclipse_align.utils.data_types import HoughParams
 
 
 # 定义信号用于线程间通信

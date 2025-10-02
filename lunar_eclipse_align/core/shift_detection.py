@@ -4,19 +4,18 @@ import cv2
 import numpy as np
 import time
 from lunar_eclipse_align.core.image import Image
-from lunar_eclipse_align.core.utils import (
-    MAX_REFINE_DELTA_PX,
-    MIN_INLIERS,
-    MIN_MEAN_ZNCC,
-    ROI,
-    Circle,
-    Point,
-    Vector,
-    VectorArray,
+from lunar_eclipse_align.utils.tools import (
     clip,
     soft_disk_mask,
 )
 from numpy.typing import NDArray
+from lunar_eclipse_align.utils.data_types import Point, Vector, Circle, ROI, VectorArray
+from lunar_eclipse_align.utils.constants import (
+    MAX_REFINE_DELTA_PX,
+    MAX_REFINE_DELTA_PX,
+    MIN_INLIERS,
+    MIN_MEAN_ZNCC,
+)
 
 # ---------------- 工具函数 ----------------
 
@@ -238,7 +237,7 @@ def collect_roi_matches(
 
         # 结合对比度作为权重，弱纹理权重低
 
-        weights.append(max(1e-3, zncc) * (0.5 + 0.5 * clip(std / 20.0, 0.0, 1.0)))
+        weights.append(max(1e-3, zncc) * (0.5 + 0.5 * clip(0.0, std / 20.0, 1.0)))
         zncc_list.append(zncc)
         logging.debug(
             f"[Refine] 采纳ROI: zncc={zncc:.2f}, dx={vd.x:.2f}, dy={vd.y:.2f}"
@@ -392,9 +391,9 @@ def make_multi_roi_shift(
 ) -> Vector[float] | None:
 
     # 自适应/裁剪 ROI 数量与大小，避免过多卷积
-    n_rois = clip(n_rois if n_rois else int(circle.radius // 70), 8, 24)
-    roi_size = clip(roi_size if roi_size else int(circle.radius * 0.18), 64, 128)
-    search = clip(search if search else int(circle.radius * 0.05), 6, 18)
+    n_rois = clip(8, n_rois if n_rois else int(circle.radius // 70), 24)
+    roi_size = clip(64, roi_size if roi_size else int(circle.radius * 0.18), 128)
+    search = clip(6, search if search else int(circle.radius * 0.05), 18)
 
     logging.debug(
         f"[Refine] HxW={ref_img.height}x{ref_img.width}, r≈{circle.radius:.1f}, n_rois={n_rois}, roi_init={roi_size}, search={search}"

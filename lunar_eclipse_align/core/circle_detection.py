@@ -7,16 +7,24 @@ import cv2
 from numpy._typing._array_like import NDArray
 
 from lunar_eclipse_align.core.image import Image
-from lunar_eclipse_align.core.utils import (
-    THUMB_SIZE,
-    Circle,
-    HoughParams,
-    PointArray,
-    VectorArray,
+from lunar_eclipse_align.utils.tools import (
+    clip,
     ring_mask,
     touches_border,
 )
 from skimage.measure import CircleModel, ransac
+from lunar_eclipse_align.utils.data_types import (
+    HoughParams,
+    Point,
+    PointArray,
+    Vector,
+    Circle,
+    ROI,
+    VectorArray,
+)
+from lunar_eclipse_align.utils.constants import (
+    THUMB_SIZE,
+)
 
 
 class BrightnessMode(Enum):
@@ -58,10 +66,10 @@ def adaptive_preprocessing(
     return filtered, brightness_mode
 
 
-def evaluate_circle_quality(img: Image, circle: Circle) -> float:
+def evaluate_circle_quality(gray: NDArray, circle: Circle) -> float:
     """对检测到的圆做一个稳定的质量打分，越大越好（0~100）。"""
 
-    w, h = img.widthXheight
+    w, h = gray.shape[1], gray.shape[0]
 
     angles = np.linspace(0, 2 * np.pi, 48)
     directions = VectorArray(
@@ -85,7 +93,6 @@ def evaluate_circle_quality(img: Image, circle: Circle) -> float:
     inners = inners.filter(mask)
     outers = outers.filter(mask)
 
-    gray = img.normalized_gray
     inner_vals = gray[inners.y.astype(int), inners.x.astype(int)]
     outer_vals = gray[outers.y.astype(int), outers.x.astype(int)]
     edge_strengths = np.abs(outer_vals - inner_vals)
@@ -264,35 +271,37 @@ def initial_process(
     return processed, brightness_mode
 
 
-def hough_on_thumb_detect(masked_gray: NDArray, params: HoughParams) -> list[Circle]:
-    height, width = masked_gray.shape[:2]
+def hough_on_thumb_detect(gray: NDArray, params: HoughParams) -> Circle | None:
+    height, width = gray.shape[:2]
     max_side = max(height, width)
     circles = []
-    if max_side <= THUMB_SIZE:
-        return []
-    scale = THUMB_SIZE / max_side
-    small_height, small_width = int(height * scale), int(width * scale)
-    small = cv2.resize(
-        masked_gray,
-        (small_width, small_height),
-        interpolation=cv2.INTER_AREA,
-    )
-    params = HoughParams(
-        minRadius=max(1, int(params.minRadius * scale)),
-        maxRadius=max(2, int(params.maxRadius * scale)),
-        param1=params.param1,
-        param2=max(params.param2 - 5, 10),
-    )
+    scale = 1.0
+    if max_side > THUMB_SIZE:
+        scale = THUMB_SIZE / max_side
+        height, width = int(height * scale), int(width * scale)
+        logging.info(f"缩放霍夫(thumb)到 {width}x{height}")
+        gray = cv2.resize(
+            gray,
+            (width, height),
+            interpolation=cv2.INTER_AREA,
+        )
+        params = HoughParams(
+            minRadius=max(1, int(params.minRadius * scale)),
+            maxRadius=max(2, int(params.maxRadius * scale)),
+            param1=params.param1,
+            param2=max(params.param2 - 5, 10),
+        )
 
     circles = cv2.HoughCircles(
-        small,
-        minDist=small_height // 2,
+        gray,
+        minDist=height // 2,
         **params,
     )
+    if circles is None:
+        return None
 
-    circles = [Circle.from_ndarray(c / scale) for c in circles[0]]
-    logging.info("缩放霍夫(thumb)")
-    return circles
+    circle = Circle.from_ndarray(circles[0][0]).scale(1 / scale)
+    return circle
 
 
 # ------------------ ROI构建 ------------------
@@ -303,34 +312,27 @@ def build_detection_roi(
 ) -> NDArray:
     height, width = processed.shape[:2]
     # —— 粗估中心半径，构建环形 ROI —— #
-    est: Circle | None = rough_center_radius(
-        processed, params.minRadius, params.maxRadius
-    )
+    est = rough_center_radius(processed, params.minRadius, params.maxRadius)
     if est:
-        ring = ring_mask(width, height, est, inner=0.70, outer=1.15) * np.uint8(255)
+        inner = min((params.minRadius / est.radius) * 0.9, 0.85)
+        outer = max(1.15, (params.maxRadius / est.radius) * 1.05)
+        ring = ring_mask(width, height, est, inner=inner, outer=outer) * np.uint8(255)
         processed = cv2.bitwise_and(processed, processed, mask=ring)
 
     # —— 若给出上一帧圆心半径，合并一个"历史先验"环形 ROI —— #
     if prev_circle:
-
-        inner = max(
-            0.70,
-            min(0.85, (params.minRadius / max(prev_circle.radius, 1e-6)) * 0.9),
-        )
-        outer = min(
-            1.30,
-            max(1.15, (params.maxRadius / max(prev_circle.radius, 1e-6)) * 1.05),
-        )
-        ring_prev = ring_mask(width, height, prev_circle, inner=inner, outer=outer)
-        ring_prev = (ring_prev * 255).astype(np.uint8)
+        inner = clip(0.70, (params.minRadius / prev_circle.radius) * 0.9, 0.85)
+        outer = clip(1.15, (params.maxRadius / prev_circle.radius) * 1.05, 1.30)
+        ring_prev = ring_mask(
+            width, height, prev_circle, inner=inner, outer=outer
+        ) * np.uint8(255)
         processed = cv2.bitwise_and(processed, processed, mask=ring_prev)
-        return processed
 
     return processed
 
 
 # ------------------ 超时检测函数 ------------------
-def timeout_fallback_detection(gray: NDArray, params: HoughParams) -> list[Circle]:
+def timeout_fallback_detection(gray: NDArray, params: HoughParams) -> Circle | None:
     height, width = gray.shape[:2]
     scale = min(1.0, 1600.0 / max(height, width))
     small_height, small_width = int(height * scale), int(width * scale)
@@ -351,12 +353,11 @@ def timeout_fallback_detection(gray: NDArray, params: HoughParams) -> list[Circl
         minDist=small_height // 2,
         **params,
     )
-
-    circles = [Circle.from_ndarray(c) for c in circles[0]]
-    if circles:
-        logging.info("超时降级(thumb)")
-
-    return circles
+    if circles is None:
+        return None
+    logging.info("超时降级(thumb)")
+    circle = Circle.from_ndarray(circles[0][0]).scale(1 / scale)
+    return circle
 
 
 # ------------------ 稳健RANSAC检测 ------------------
@@ -364,10 +365,10 @@ def timeout_fallback_detection(gray: NDArray, params: HoughParams) -> list[Circl
 
 def detect_circle_robust(
     gray: NDArray, prev_circle: Circle | None = None
-) -> list[Circle]:
+) -> Circle | None:
     pts = edge_points_outer_rim(gray, prev_circle)
     if not pts:
-        return []
+        return None
     model, inliers = ransac(
         data=pts._arr,
         model_class=CircleModel,
@@ -377,7 +378,7 @@ def detect_circle_robust(
         stop_probability=0.99,  # type: ignore
     )
     if np.sum(inliers) < 40:  # type: ignore
-        return []
+        return None
     cy, cx, r = model.params  # type: ignore
     cand = Circle(float(cx), float(cy), float(r))
 
@@ -386,35 +387,33 @@ def detect_circle_robust(
     span: np.float64 = np.ptp(arctans)
     if prev_circle and span < (2 * np.pi / 3.0):  # <120°
         cand = Circle(cand.x, cand.y, prev_circle.radius)
-    return [cand]
+    return cand
 
 
 # ------------------ 标准霍夫检测 ------------------
-def standard_hough_detect(masked_gray: NDArray, hough: HoughParams) -> list[Circle]:
+def standard_hough_detect(gray: NDArray, hough: HoughParams) -> Circle | None:
 
-    height, width = masked_gray.shape[:2]
+    height, width = gray.shape[:2]
     circles = cv2.HoughCircles(
-        masked_gray,
+        gray,
         minDist=height // 2,
         **hough,
     )
     if circles is None:
-        return []
-
-    circles = [Circle.from_ndarray(c) for c in circles[0]]
-    if circles:
-        logging.info("标准霍夫")
-    return circles
+        return None
+    logging.info("标准霍夫")
+    circle = Circle.from_ndarray(circles[0][0])
+    return circle
 
 
 # ------------------ 自适应霍夫检测 ------------------
 def adaptive_hough_detect(
-    masked_gray: NDArray,
+    gray: NDArray,
     params: HoughParams,
     brightness_mode: BrightnessMode,
-) -> list[Circle]:
+) -> Circle | None:
     params = params.copy()
-    height, width = masked_gray.shape[:2]
+    height, width = gray.shape[:2]
     if brightness_mode == BrightnessMode.BRIGHT:
         params.param1 += 20
         params.param2 = max(params.param2 - 5, 10)
@@ -425,21 +424,20 @@ def adaptive_hough_detect(
         params.param2 = max(params.param2 - 8, 8)
 
     circles = cv2.HoughCircles(
-        masked_gray,
+        gray,
         minDist=height // 2,
         **params,
     )
     if circles is None:
-        return []
-    circles = [Circle.from_ndarray(c) for c in circles[0]]
-    if circles:
-        logging.info(f"自适应霍夫(P1={params.param1},P2={params.param2})")
+        return None
 
-    return circles
+    logging.info(f"自适应霍夫(P1={params.param1},P2={params.param2})")
+    circle = Circle.from_ndarray(circles[0][0])
+    return circle
 
 
 # ------------------ 轮廓检测 ------------------
-def contour_detect(gray: NDArray, hough: HoughParams) -> list[Circle]:
+def contour_detect(gray: NDArray, hough: HoughParams) -> Circle | None:
     mean_val = float(np.mean(gray))
     tv = max(50, int(mean_val * 0.7))
     _, binary = cv2.threshold(gray, tv, 255, cv2.THRESH_BINARY)
@@ -454,21 +452,23 @@ def contour_detect(gray: NDArray, hough: HoughParams) -> list[Circle]:
         for cnt in contours
         if (c := cv2.minEnclosingCircle(cnt))
     ]
-    circles = [c for c in circles if hough.minRadius <= c.radius <= hough.maxRadius]
     logging.info(f"轮廓检测(T={tv})")
+    for c in circles:
+        if hough.minRadius <= c.radius <= hough.maxRadius:
+            return c
 
-    return circles
+    return None
 
 
 # ------------------ Padding 降级检测 ------------------
 def padding_fallback_detect(
-    masked_gray: NDArray,
+    gray: NDArray,
     params: HoughParams,
-) -> list[Circle]:
+) -> Circle | None:
 
     pad = int(max(32, round(params.maxRadius * 1.2)))
     padded_gray = cv2.copyMakeBorder(
-        masked_gray,
+        gray,
         pad,
         pad,
         pad,
@@ -480,7 +480,7 @@ def padding_fallback_detect(
     est = rough_center_radius(
         padded_gray, int(params.minRadius * 1.1), int(params.maxRadius * 1.1)
     )
-    padded_masked_gray = padded_gray
+    padded_gray = padded_gray
     if est is not None:
         ring = ring_mask(
             padded_gray.shape[1],  # width
@@ -489,9 +489,9 @@ def padding_fallback_detect(
             inner=0.70,
             outer=1.15,
         ) * np.uint8(255)
-        padded_masked_gray = cv2.bitwise_and(padded_gray, padded_gray, mask=ring)
+        padded_gray = cv2.bitwise_and(padded_gray, padded_gray, mask=ring)
 
-    height, width = padded_masked_gray.shape[:2]
+    height, width = padded_gray.shape[:2]
     params = HoughParams(
         minRadius=int(max(1, params.minRadius * 1.1)),
         maxRadius=int(max(2, params.maxRadius * 1.1)),
@@ -499,19 +499,22 @@ def padding_fallback_detect(
         param2=max(params.param2 - 5, 8),
     )
     circles = cv2.HoughCircles(
-        padded_masked_gray,
+        padded_gray,
         minDist=height // 2,
         **params,
     )
-    circles = [Circle.from_ndarray(c) for c in circles[0]]
-    return circles or detect_circle_robust(padded_gray)
+    if circles is None:
+        return detect_circle_robust(padded_gray)
+    circle = Circle.from_ndarray(circles[0][0])
+    logging.info("Padding降级")
+    return circle
 
 
 # ------------------ 最终圆验证 ------------------
 def final_detect(
     gray: NDArray,
     params: HoughParams,
-) -> list[Circle]:
+) -> Circle | None:
 
     # 在严格窗口内再做一次快速霍夫重试
     height, width = gray.shape
@@ -527,11 +530,12 @@ def final_detect(
         minDist=max(16, min(height, width) // 4),
         **params,
     )
-
-    circles = [Circle.from_ndarray(c) for c in circles[0]]
-    circles = [c for c in circles if params.minRadius <= c.radius <= params.maxRadius]
-
-    return circles
+    if circles is None:
+        return None
+    circle = Circle.from_ndarray(circles[0][0])
+    if not (params.minRadius <= circle.radius <= params.maxRadius):
+        return None
+    return None
 
 
 def detect_circle(
@@ -545,19 +549,24 @@ def detect_circle(
 
     将原本的单体大函数拆分为多个职责明确的辅助函数
     """
-
+    logging.debug(
+        f"开始检测：{params.minRadius=:.2f} {params.maxRadius=:.2f} {params.param1=:.2f} {params.param2=:.2f}"
+    )
     best_circle: Circle | None = None
     best_quality: float = 0.0
     # 1. 设置检测环境
     gray, brightness_mode = initial_process(img, strong_denoise)
 
-    def update_best(circles: list[Circle]):
+    def update_best(circle: Circle | None):
         nonlocal best_circle, best_quality, gray
-        for c in circles:
-            quality = evaluate_circle_quality(img, c)
-            if not best_circle or quality > best_quality:
-                best_circle = c
-                best_quality = quality
+        if not circle:
+            return
+
+        quality = evaluate_circle_quality(gray, circle)
+        # quality = evaluate_circle_quality(img.normalized_gray, circle)
+        if not best_circle or quality > best_quality:
+            best_circle = circle
+            best_quality = quality
 
     # 2. 构建检测ROI
     masked_gray = build_detection_roi(
@@ -625,17 +634,5 @@ def detect_circle_quick(
 
     gray, brightness_mode = initial_process(img, strong_denoise)
 
-    # 2. 构建检测ROI
-    masked_gray = build_detection_roi(
-        gray,
-        params,
-        None,
-    )
-    circles = hough_on_thumb_detect(masked_gray, params)
-    # TODO: add gate
-    best_circle = max(
-        circles,
-        key=lambda c: evaluate_circle_quality(img, c),
-        default=None,
-    )
-    return best_circle
+    circle = hough_on_thumb_detect(gray, params)
+    return circle

@@ -6,13 +6,11 @@ from typing import Iterable
 import cv2, numpy as np
 
 from lunar_eclipse_align.core.image import Image, ImageFile
-from lunar_eclipse_align.core.utils import (
+from lunar_eclipse_align.utils.tools import (
     Circle,
-    HoughParams,
-    Point,
-    Vector,
     get_memory_usage_mb,
 )
+from lunar_eclipse_align.utils.data_types import HoughParams, Point, Vector
 
 from lunar_eclipse_align.core.circle_detection import (
     detect_circle,

@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 from lunar_eclipse_align.core.circle_detection import build_analysis_mask, detect_circle
 
 from lunar_eclipse_align.core.image import ImageFile
+from lunar_eclipse_align.utils.constants import SUPPORTED_EXTS
+from lunar_eclipse_align.utils.data_types import HoughParams
 
 if TYPE_CHECKING:
     from lunar_eclipse_align.ui.main_window import UniversalLunarAlignApp
@@ -47,12 +49,6 @@ from PySide6.QtGui import (
 )
 
 # 导入工具函数
-from lunar_eclipse_align.core.utils import (
-    SUPPORTED_EXTS,
-    Circle,
-    HoughParams,
-    Vector,
-)
 
 
 class DebugWindow(QDialog):

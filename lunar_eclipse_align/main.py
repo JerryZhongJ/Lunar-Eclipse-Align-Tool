@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt
 
 from lunar_eclipse_align import __version__ as VERSION
 from lunar_eclipse_align.ui.main_window import UniversalLunarAlignApp
-from lunar_eclipse_align.logging_setup import setup_logging
+from lunar_eclipse_align.utils.logging_setup import setup_logging
 
 
 def main():

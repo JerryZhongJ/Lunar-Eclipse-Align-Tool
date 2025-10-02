@@ -9,13 +9,13 @@ from numpy.typing import NDArray
 
 import gc
 
-from lunar_eclipse_align.core.utils import SUPPORTED_EXTS
+from lunar_eclipse_align.utils.constants import SUPPORTED_EXTS
 
 
 class Image:
     _rgb: NDArray
     _bgr: NDArray | None = None
-    exif: PILImage.Exif | None
+    exif: bytes | None
     icc: bytes | None
     _normalized_gray: NDArray | None = None
     _width: int
@@ -26,7 +26,7 @@ class Image:
         *,
         rgb: NDArray | None = None,
         bgr: NDArray | None = None,
-        exif: PILImage.Exif | None = None,
+        exif: bytes | None = None,
         icc: bytes | None = None,
     ):
 
@@ -49,7 +49,7 @@ class Image:
         except Exception as e:
             logging.error(f"无法加载图像 {file_path}: {e}")
             return None
-        exif: PILImage.Exif = pil_image.getexif()
+        exif = pil_image.info.get("exif", None)
         icc: bytes | None = pil_image.info.get("icc_profile", None)
         rgb = np.array(pil_image)
         return Image(rgb=rgb, exif=exif, icc=icc)
@@ -64,9 +64,7 @@ class Image:
             save_kwargs["compression"] = "tiff_deflate"
         try:
             pil_image = PILImage.fromarray(self.rgb)
-            pil_image.save(
-                file_path, exif=self.exif, icc_profile=self.icc, **save_kwargs
-            )
+            pil_image.save(file_path, icc_profile=self.icc, **save_kwargs)
         except Exception as e:
             logging.error(f"无法保存图像到 {file_path}: {e}")
             return False

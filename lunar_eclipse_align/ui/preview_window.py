@@ -7,10 +7,12 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from lunar_eclipse_align.core.circle_detection import build_analysis_mask, detect_circle
+from lunar_eclipse_align.core.circle_detection import detect_circle, detect_circle_quick
 
 from lunar_eclipse_align.core.image import Image, ImageFile
 from lunar_eclipse_align.ui.select_rect import InteractiveGraphicsView
+from lunar_eclipse_align.utils.constants import SUPPORTED_EXTS
+from lunar_eclipse_align.utils.data_types import Circle, Vector
 
 if TYPE_CHECKING:
     from lunar_eclipse_align.ui.main_window import UniversalLunarAlignApp
@@ -41,15 +43,6 @@ from PySide6.QtGui import (
     QColor,
     QPen,
     QBrush,
-)
-
-
-# 导入工具函数
-from lunar_eclipse_align.core.utils import (
-    SUPPORTED_EXTS,
-    Circle,
-    Vector,
-    HoughParams,
 )
 
 
@@ -375,7 +368,9 @@ class PreviewWindow(QDialog):
         self.params.minRadius = max_side // 20  # 临时设置检测用的半径范围
         self.params.maxRadius = max_side // 2
 
-        circle = detect_circle(crop_img, self.params, self.app.enable_strong_denoise)
+        circle = detect_circle_quick(
+            crop_img, self.params, self.app.enable_strong_denoise
+        )
         if not circle:
             logging.error("预览：圆检测失败")
             return
