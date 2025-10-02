@@ -41,7 +41,7 @@ from lunar_eclipse_align.core.utils import (
     HoughParams,
 )
 
-from lunar_eclipse_align.ui.windows import PreviewWindow, DebugWindow, ProgressWindow
+from lunar_eclipse_align.ui.preview_window import PreviewWindow, ProgressWindow
 
 
 # 定义信号用于线程间通信
@@ -105,7 +105,7 @@ class UniversalLunarAlignApp(QMainWindow):
         super().__init__()
 
         # 初始化变量
-        self.preview_window = None
+
         self.progress_window = None
         self.debug_window = None
         self.alignment_thread = None
@@ -128,6 +128,8 @@ class UniversalLunarAlignApp(QMainWindow):
 
         # 设置信号连接
         self._connect_signals()
+
+        self.preview_window = PreviewWindow(self)
 
     def _init_variables(self):
         """初始化变量"""
@@ -184,22 +186,24 @@ class UniversalLunarAlignApp(QMainWindow):
         self.output_browse_btn.clicked.connect(self.select_output_folder)
         layout.addWidget(self.output_browse_btn, 1, 2)
 
-        # 参考图像
+        # # 参考图像
         layout.addWidget(QLabel("参考图像:"), 2, 0)
-        self.reference_edit = QLineEdit()
-        self.reference_edit.setPlaceholderText("选择参考图像...")
-        layout.addWidget(self.reference_edit, 2, 1)
+        self.ref_label = QLabel("（在预览窗口选择）")
+        layout.addWidget(self.ref_label, 2, 1)
+        # self.reference_edit = QLineEdit()
+        # self.reference_edit.setPlaceholderText("选择参考图像...")
+        # layout.addWidget(self.reference_edit, 2, 1)
 
-        # 参考图像按钮布局
-        ref_btn_layout = QHBoxLayout()
-        ref_btn_layout.setContentsMargins(0, 0, 0, 0)
-        self.reference_select_btn = QPushButton("选择")
-        self.reference_select_btn.clicked.connect(self.select_reference_image)
-        ref_btn_layout.addWidget(self.reference_select_btn)
-        self.reference_clear_btn = QPushButton("清除")
-        self.reference_clear_btn.clicked.connect(self.clear_reference_image)
-        ref_btn_layout.addWidget(self.reference_clear_btn)
-        layout.addLayout(ref_btn_layout, 2, 2)
+        # # 参考图像按钮布局
+        # ref_btn_layout = QHBoxLayout()
+        # ref_btn_layout.setContentsMargins(0, 0, 0, 0)
+        # self.reference_select_btn = QPushButton("选择")
+        # self.reference_select_btn.clicked.connect(self.select_reference_image)
+        # ref_btn_layout.addWidget(self.reference_select_btn)
+        # self.reference_clear_btn = QPushButton("清除")
+        # self.reference_clear_btn.clicked.connect(self.clear_reference_image)
+        # ref_btn_layout.addWidget(self.reference_clear_btn)
+        # layout.addLayout(ref_btn_layout, 2, 2)
 
         # 帮助提示和强力降噪选项
         help_layout = QHBoxLayout()
@@ -231,62 +235,42 @@ class UniversalLunarAlignApp(QMainWindow):
         hough_layout = QVBoxLayout(hough_group)
 
         # 帮助文本
-        help_text = QLabel(
-            "• PHD2增强算法：三级检测策略，自适应图像亮度\n"
-            "• 最小/最大半径: 限制检测到的圆的半径范围(像素)\n"
-            "• 参数1: Canny边缘检测高阈值\n"
-            "• 参数2: 霍夫累加器阈值（关键参数）"
-        )
+        help_text = QLabel("• PHD2增强算法：三级检测策略，自适应图像亮度\n")
         help_text.setStyleSheet("font-size: 9pt;")
         hough_layout.addWidget(help_text)
 
-        # 参数控制
-        param_widgets = {}
+        # 参数显示（只读）
         param_configs = [
-            ("minRadius", "最小半径:", 1, 3000),
-            ("maxRadius", "最大半径:", 10, 4000),
-            ("param1", "参数1 (Canny):", 1, 200),
-            ("param2", "参数2 (累加阈值):", 1, 100),
+            ("minRadius", "最小半径:"),
+            ("maxRadius", "最大半径:"),
+            ("param1", "边缘敏感度:"),
+            ("param2", "圆心阈值:"),
         ]
 
-        for i, (key, label, min_val, max_val) in enumerate(param_configs):
+        self.param_labels = {}
+        for key, label_text in param_configs:
             # 创建参数行
             param_row = QWidget()
             param_row_layout = QHBoxLayout(param_row)
             param_row_layout.setContentsMargins(0, 0, 0, 0)
 
             # 标签
-            param_label = QLabel(label)
+            param_label = QLabel(label_text)
             param_row_layout.addWidget(param_label, 1)
 
-            # 滑块
-            slider = QSlider(Qt.Orientation.Horizontal)
-            slider.setMinimum(min_val)
-            slider.setMaximum(max_val)
-            slider.setValue(self.params[key])
-            param_row_layout.addWidget(slider, 2)
+            # 显示值的标签
+            value_label = QLabel()
+            value_label.setStyleSheet("font-weight: bold; color: #2196F3;")
+            if key in ["minRadius", "maxRadius"]:
+                value_label.setText(f"{self.params[key]} px")
+            else:
+                value_label.setText(str(self.params[key]))
+            param_row_layout.addWidget(value_label, 0)
 
-            # 数值输入框
-            spinbox = QSpinBox()
-            spinbox.setMinimum(min_val)
-            spinbox.setMaximum(max_val)
-            spinbox.setValue(self.params[key])
-            param_row_layout.addWidget(spinbox, 0)
-
-            # 连接信号
-            slider.valueChanged.connect(
-                lambda v, k=key, s=spinbox: self._on_param_changed(k, v, s)
-            )
-            spinbox.valueChanged.connect(
-                lambda v, k=key, sl=slider: self._on_param_changed(k, v, sl)
-            )
-
-            # 保存控件引用
-            param_widgets[key] = {"slider": slider, "spinbox": spinbox}
+            # 保存标签引用
+            self.param_labels[key] = value_label
 
             hough_layout.addWidget(param_row)
-
-        self.param_widgets = param_widgets
         param_layout.addWidget(hough_group, 2)
 
         # 多ROI精配准区域
@@ -331,13 +315,13 @@ class UniversalLunarAlignApp(QMainWindow):
         group = QGroupBox("4. 预览与调试")
         layout = QHBoxLayout(group)
 
-        self.preview_btn = QPushButton("打开预览 & 半径估计窗口")
+        self.preview_btn = QPushButton("选择参考并预览")
         self.preview_btn.clicked.connect(self.open_preview)
         layout.addWidget(self.preview_btn, 1)
 
-        self.debug_btn = QPushButton("打开调试窗口（实时参数预览）")
-        self.debug_btn.clicked.connect(self.open_debug)
-        layout.addWidget(self.debug_btn, 1)
+        # self.debug_btn = QPushButton("打开调试窗口（实时参数预览）")
+        # self.debug_btn.clicked.connect(self.open_debug)
+        # layout.addWidget(self.debug_btn, 1)
 
         parent_layout.addWidget(group)
 
@@ -391,14 +375,18 @@ class UniversalLunarAlignApp(QMainWindow):
 
         self.log_browser.append(welcome)
 
-    def _on_param_changed(self, key, value, companion_widget):
-        """参数改变时的处理"""
-        self.params[key] = value
+    def update_hough_params(self, params: HoughParams):
+        """从Preview Window接收参数更新"""
+        self.params = params.copy()
+        self.param_labels["param1"].setText(str(params.param1))
+        self.param_labels["param2"].setText(str(params.param2))
+        self.param_labels["minRadius"].setText(f"{params.minRadius} px")
+        self.param_labels["maxRadius"].setText(f"{params.maxRadius} px")
 
-        # 阻止循环更新
-        companion_widget.blockSignals(True)
-        companion_widget.setValue(value)
-        companion_widget.blockSignals(False)
+    def update_reference_path(self, ref_path: Path):
+        """更新参考路径"""
+        self.reference_path = ref_path
+        self.ref_label.setText(ref_path.name)
 
     def on_advanced_changed(self):
         """高级功能状态改变"""
@@ -425,52 +413,51 @@ class UniversalLunarAlignApp(QMainWindow):
             self.output_path = Path(folder)
             self.output_edit.setText(self.output_path.name)
 
-    def select_reference_image(self):
-        """选择参考图像"""
-        initial_dir = (
-            self.input_path if self.input_path and self.input_path.is_dir() else Path()
-        )
-        file_filter = f"支持的图像 ( {' '.join(SUPPORTED_EXTS)} );;所有文件 (*.*)"
+    # def select_reference_image(self):
+    #     """选择参考图像"""
+    #     initial_dir = (
+    #         self.input_path if self.input_path and self.input_path.is_dir() else Path()
+    #     )
+    #     file_filter = f"支持的图像 ( {' '.join(SUPPORTED_EXTS)} );;所有文件 (*.*)"
 
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择参考图像（用作对齐基准）", str(initial_dir), file_filter
-        )
+    #     file_path, _ = QFileDialog.getOpenFileName(
+    #         self, "选择参考图像（用作对齐基准）", str(initial_dir), file_filter
+    #     )
 
-        file_path = Path(file_path)
-        # 检查是否在输入文件夹内
-        if self.input_path and not file_path.is_relative_to(self.input_path):
-            reply = QMessageBox.question(
-                self,
-                "确认",
-                "选择的参考图像不在输入文件夹内。\n建议选择输入文件夹中的图像作为参考。\n是否继续使用此图像？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply == QMessageBox.StandardButton.No:
-                return
+    #     file_path = Path(file_path)
+    #     # 检查是否在输入文件夹内
+    #     if self.input_path and not file_path.is_relative_to(self.input_path):
+    #         reply = QMessageBox.question(
+    #             self,
+    #             "确认",
+    #             "选择的参考图像不在输入文件夹内。\n建议选择输入文件夹中的图像作为参考。\n是否继续使用此图像？",
+    #             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+    #         )
+    #         if reply == QMessageBox.StandardButton.No:
+    #             return
 
-        self.reference_path = file_path
-        self.reference_edit.setText(file_path.name)
+    #     self.reference_path = file_path
+    #     self.reference_edit.setText(file_path.name)
 
-    def clear_reference_image(self):
-        """清除参考图像"""
-        self.reference_path = None
-        self.reference_edit.setText("")
+    # def clear_reference_image(self):
+    #     """清除参考图像"""
+    #     self.reference_path = None
+    #     self.reference_edit.setText("")
 
     def open_preview(self):
-        """打开预览窗口"""
-        if self.preview_window is None or not self.preview_window.isVisible():
-            self.preview_window = PreviewWindow(self)
+        """打开预览窗口（复用现有窗口实例）"""
+
         self.preview_window.show()
         self.preview_window.raise_()
         self.preview_window.activateWindow()
 
-    def open_debug(self):
-        """打开调试窗口"""
-        if self.debug_window is None or not self.debug_window.isVisible():
-            self.debug_window = DebugWindow(self)
-        self.debug_window.show()
-        self.debug_window.raise_()
-        self.debug_window.activateWindow()
+    # def open_debug(self):
+    #     """打开调试窗口"""
+    #     if self.debug_window is None or not self.debug_window.isVisible():
+    #         self.debug_window = DebugWindow(self)
+    #     self.debug_window.show()
+    #     self.debug_window.raise_()
+    #     self.debug_window.activateWindow()
 
     def _warning_dialog(self, title, message):
         """显示警告对话框"""

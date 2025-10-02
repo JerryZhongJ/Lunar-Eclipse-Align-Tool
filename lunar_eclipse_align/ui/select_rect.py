@@ -69,7 +69,6 @@ class EditableRect(QGraphicsRectItem):
         super().__init__(rect, parent)
         self.handles: dict[str, ResizeHandle] = {}
         self.is_updating = False
-
         # 设置样式
         self.setPen(QPen(QColor(0, 191, 255), 2))  # 蓝色边框
         self.setBrush(QBrush(QColor(0, 191, 255, 30)))  # 半透明蓝色填充
@@ -77,8 +76,6 @@ class EditableRect(QGraphicsRectItem):
         # 设置标志
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
 
-    def enable_handles(self):
-        # 创建句柄
         self.create_handles()
         self.update_handles()
 
@@ -147,69 +144,85 @@ class EditableRect(QGraphicsRectItem):
             rectF.setLeft(new_pos.x())
 
         self.setRect(rectF)
+
         self.update_handles()
 
 
 class InteractiveGraphicsView(QGraphicsView):
     """交互式图形视图，支持鼠标绘制矩形框"""
 
+    rect_drawed: Signal = Signal(QRectF)
+    rect_resized: Signal = Signal(QRectF)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.current_rect: EditableRect | None = None
+        self.drawing_rect: QGraphicsRectItem | None = None
         self.drawing_start: QPointF | None = None
 
     def mousePressEvent(self, event):
+        scene_pos = self.mapToScene(event.pos())
+        item = self.scene().itemAt(scene_pos, self.transform())
+        # 检查是否点击在现有矩形或句柄上
+
+        if isinstance(item, (EditableRect, ResizeHandle)):
+
+            # 如果点击在现有元素上，交给默认处理
+            super().mousePressEvent(event)
+            return
+
         if event.button() == Qt.MouseButton.LeftButton:
             # 转换到场景坐标
-            scene_pos = self.mapToScene(event.pos())
 
-            if self.drawing_start:
+            if self.drawing_rect:
                 super().mousePressEvent(event)
                 return  # 忽略多余的点击
 
-            # 检查是否点击在现有矩形或句柄上
-            item = self.scene().itemAt(scene_pos, self.transform())
-            if isinstance(item, (EditableRect, ResizeHandle)):
-                print("no")
-                # 如果点击在现有元素上，交给默认处理
-                super().mousePressEvent(event)
-                return
-            print("press")
             # 开始绘制新矩形
             self.drawing_start = scene_pos
 
             # 如果已有矩形，先移除
             if self.current_rect:
                 self.scene().removeItem(self.current_rect)
-            self.current_rect = EditableRect(QRectF(scene_pos, scene_pos))
-            self.scene().addItem(self.current_rect)
+            self.drawing_rect = QGraphicsRectItem(QRectF(scene_pos, scene_pos))
+            self.scene().addItem(self.drawing_rect)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if self.drawing_start:
-            assert self.current_rect is not None
+        if self.drawing_rect:
             assert self.drawing_start is not None
             current_pos = self.mapToScene(event.pos())
             # 计算矩形区域
             rect = QRectF(self.drawing_start, current_pos).normalized()
-            self.current_rect.setRect(rect)
+            self.drawing_rect.setRect(rect)
 
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and self.drawing_start:
+        scene_pos = self.mapToScene(event.pos())
+        item = self.scene().itemAt(scene_pos, self.transform())
+        if event.button() == Qt.MouseButton.LeftButton and self.drawing_rect:
             print("release")
-            assert self.current_rect is not None
+
             self.drawing_start = None
 
             # 检查矩形大小是否合理
-            rect = self.current_rect.rect()
+            rect = self.drawing_rect.rect()
             if rect.width() > 10 and rect.height() > 10:
-                self.current_rect.enable_handles()
-            else:
-                # 矩形太小，移除
-                self.scene().removeItem(self.current_rect)
-                self.current_rect = None
+                self.current_rect = EditableRect(rect)
+                self.scene().addItem(self.current_rect)
+                self.rect_drawed.emit(rect)
+            self.scene().removeItem(self.drawing_rect)
+            self.drawing_rect = None
+
+        if event.button() == Qt.MouseButton.LeftButton and isinstance(
+            item, ResizeHandle
+        ):
+            # 如果释放在现有矩形或句柄上，交给默认处理
+            super().mouseReleaseEvent(event)
+            assert self.current_rect is not None
+            self.rect_resized.emit(self.current_rect.rect())
+            return
 
         super().mouseReleaseEvent(event)

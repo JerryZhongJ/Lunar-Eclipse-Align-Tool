@@ -410,32 +410,19 @@ def standard_hough_detect(masked_gray: NDArray, hough: HoughParams) -> list[Circ
 # ------------------ 自适应霍夫检测 ------------------
 def adaptive_hough_detect(
     masked_gray: NDArray,
-    hough: HoughParams,
+    params: HoughParams,
     brightness_mode: BrightnessMode,
 ) -> list[Circle]:
-
+    params = params.copy()
     height, width = masked_gray.shape[:2]
     if brightness_mode == BrightnessMode.BRIGHT:
-        params = HoughParams(
-            minRadius=hough.minRadius,
-            maxRadius=hough.maxRadius,
-            param1=hough.param1 + 20,
-            param2=max(hough.param2 - 5, 10),
-        )
+        params.param1 += 20
+        params.param2 = max(params.param2 - 5, 10)
     elif brightness_mode == BrightnessMode.DARK:
-        params = HoughParams(
-            minRadius=hough.minRadius,
-            maxRadius=hough.maxRadius,
-            param1=max(hough.param1 - 15, 20),
-            param2=max(hough.param2 - 10, 5),
-        )
+        params.param1 = max(params.param1 - 15, 20)
+        params.param2 = max(params.param2 - 10, 5)
     else:
-        params = HoughParams(
-            minRadius=hough.minRadius,
-            maxRadius=hough.maxRadius,
-            param1=hough.param1,
-            param2=max(hough.param2 - 8, 8),
-        )
+        params.param2 = max(params.param2 - 8, 8)
 
     circles = cv2.HoughCircles(
         masked_gray,
