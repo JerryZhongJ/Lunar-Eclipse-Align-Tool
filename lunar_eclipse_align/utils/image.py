@@ -43,8 +43,8 @@ class TiffIO(ImageFileIO):
 
                 # 获取ICC Profile
                 icc = None
-                if 34675 in tif.pages[0].tags:  # ICC Profile tag
-                    icc_tag = tif.pages[0].tags[34675]
+                if 34675 in tif.pages[0].tags:  # ICC Profile tag # type: ignore
+                    icc_tag = tif.pages[0].tags[34675]  # type: ignore
                     icc = icc_tag.value
 
                 return Image(rgb=rgb, icc=icc)
@@ -466,9 +466,9 @@ class ImageFile:
         return self._image.save(self._path)
 
 
-if __name__ == "__main__":
-    # 测试代码
-    image = Image.from_file(Path("images/basic/DSC_3551.tif"))
-    print(image.rgb.dtype)
-    print(image.rgb.shape)
-    image.save(Path("test_out.tif"))
+# if __name__ == "__main__":
+#     # 测试代码
+#     image = Image.from_file(Path("images/basic/DSC_3551.tif"))
+#     print(image.rgb.dtype)
+#     print(image.rgb.shape)
+#     image.save(Path("test_out.tif"))

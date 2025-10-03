@@ -130,7 +130,7 @@ def remove_stars_small(gray: NDArray):
 
 
 def edge_points_outer_rim(
-    gray: np.ndarray, prev_circle: Circle | None = None
+    gray: NDArray, prev_circle: Circle | None = None
 ) -> PointArray | None:
     # Canny 边缘检测
     edges = cv2.Canny(gray, 50, 150)
@@ -358,23 +358,28 @@ def detect_circle_robust(
     pts = edge_points_outer_rim(gray, prev_circle)
     if not pts:
         return None
+    model: CircleModel | None
+    inliers: list[bool] | None
     model, inliers = ransac(
         data=pts._arr,
         model_class=CircleModel,
         min_samples=3,
         residual_threshold=2.0,
         max_trials=120,
-        stop_probability=0.99,  # type: ignore
     )
-    if np.sum(inliers) < 40:  # type: ignore
+    if model is None or inliers is None:
         return None
-    cy, cx, r = model.params  # type: ignore
+    if np.sum(inliers) < 40:
+        return None
+    cx, cy, r = model.params  # CircleModel.params 返回 (xc, yc, r)
     cand = Circle(float(cx), float(cy), float(r))
-
+    logging.debug("稳健RANSAC")
+    if prev_circle is None:
+        return cand
     vectors = pts - cand.center
     arctans = np.arctan2(vectors.y, vectors.x)
     span: np.float64 = np.ptp(arctans)
-    if prev_circle and span < (2 * np.pi / 3.0):  # <120°
+    if span < (2 * np.pi / 3.0):  # <120°
         cand = Circle(cand.x, cand.y, prev_circle.radius)
     return cand
 
@@ -390,7 +395,7 @@ def standard_hough_detect(gray: NDArray, hough: HoughParams) -> Circle | None:
     )
     if circles is None:
         return None
-    logging.info("标准霍夫")
+    logging.debug("标准霍夫")
     circle = Circle.from_ndarray(circles[0][0])
     return circle
 
@@ -420,7 +425,7 @@ def adaptive_hough_detect(
     if circles is None:
         return None
 
-    logging.info(f"自适应霍夫(P1={params.param1},P2={params.param2})")
+    logging.debug(f"自适应霍夫(P1={params.param1},P2={params.param2})")
     circle = Circle.from_ndarray(circles[0][0])
     return circle
 
@@ -441,7 +446,7 @@ def contour_detect(gray: NDArray, hough: HoughParams) -> Circle | None:
         for cnt in contours
         if (c := cv2.minEnclosingCircle(cnt))
     ]
-    logging.info(f"轮廓检测(T={tv})")
+    logging.debug(f"轮廓检测(T={tv})")
     for c in circles:
         if hough.minRadius <= c.radius <= hough.maxRadius:
             return c
@@ -495,7 +500,7 @@ def padding_fallback_detect(
     if circles is None:
         return detect_circle_robust(padded_gray)
     circle = Circle.from_ndarray(circles[0][0])
-    logging.info("Padding降级")
+    logging.debug("Padding降级")
     return circle
 
 
@@ -524,7 +529,8 @@ def final_detect(
     circle = Circle.from_ndarray(circles[0][0])
     if not (params.minRadius <= circle.radius <= params.maxRadius):
         return None
-    return None
+    logging.debug("最终验证")
+    return circle
 
 
 def detect_circle(

@@ -3,9 +3,8 @@
 """
 
 import pytest
-import cv2
-import numpy as np
-import os
+
+from pathlib import Path
 from lunar_eclipse_align.core.circle_detection import (
     detect_circle,
     detect_circle_quick,
@@ -17,11 +16,9 @@ from lunar_eclipse_align.core.circle_detection import (
     final_detect,
     initial_process,
     build_detection_roi,
-    BrightnessMode,
 )
 from lunar_eclipse_align.utils.data_types import HoughParams
 from lunar_eclipse_align.utils.image import Image, ImageFile
-from pathlib import Path
 
 
 @pytest.fixture

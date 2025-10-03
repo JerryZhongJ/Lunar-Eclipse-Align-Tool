@@ -16,8 +16,8 @@ class HoughParams:
     maxRadius: int
     param1: int
     param2: int
-    method: int = cv2.HOUGH_GRADIENT
-    dp: float = 1.2
+    method: int
+    dp: float
 
     def __init__(
         self,
@@ -26,7 +26,7 @@ class HoughParams:
         param1: int,
         param2: int,
         method: int = cv2.HOUGH_GRADIENT,
-        dp: float = 1.2,
+        dp: float = 1.0,
     ):
         self.minRadius = minRadius
         self.maxRadius = maxRadius
