@@ -12,7 +12,7 @@ images:
       radius: 241.76
 
   left-top:
-    path: "images/basic/DSC_3573.tif"
+    path: "images/basic/DSC_3575.tif"
     description: "左上角"
     default_params: "basic"
     expected_result:

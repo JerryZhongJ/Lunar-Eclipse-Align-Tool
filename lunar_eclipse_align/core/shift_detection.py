@@ -117,8 +117,8 @@ def initial_process(
     # 归一化转为8-bit，用于能量图和ROI选择
 
     # 梯度/DoG 预处理（抗亮度变化），用于匹配阶段
-    refF = clahe_and_bandpass(ref_img.normalized_gray)
-    tgtF = clahe_and_bandpass(img.normalized_gray)
+    refF = clahe_and_bandpass(ref_img.gray_8bit)
+    tgtF = clahe_and_bandpass(img.gray_8bit)
 
     # 只保留盘内
     refF = (refF.astype(np.float32) * mask).astype(np.uint8)
@@ -200,7 +200,7 @@ def collect_roi_matches(
             continue
 
         min_bright, max_bright = 30, 220
-        ref_block8 = ref_img.normalized_gray[
+        ref_block8 = ref_img.gray_8bit[
             roi.y : roi.y + roi.height, roi.x : roi.x + roi.width
         ]
         mask_patch = (min_bright <= ref_block8 <= max_bright) * np.uint8(255)
@@ -413,7 +413,7 @@ def make_multi_roi_shift(
         circle.radius,
         k=n_rois,
         box=roi_size,
-        ref_gray=ref_img.normalized_gray,
+        ref_gray=ref_img.gray_8bit,
     )
     logging.debug(f"[Refine] ROI候选数={len(rois)}")
 
@@ -498,15 +498,18 @@ def advanced_detect_shift(
 
 def masked_phase_corr(
     img: Image, ref_img: Image, circle: Circle, inner: float = 0.90, outer: float = 0.98
-) -> Vector:
+) -> Vector[float] | None:
     W, H = ref_img.widthXheight
 
     mask = soft_disk_mask(H, W, circle, inner=inner, outer=outer)
 
-    rg = ref_img.normalized_gray * mask
-    tg = img.normalized_gray * mask
+    rg = ref_img.gray_8bit * mask
+    tg = img.gray_8bit * mask
 
-    (dx, dy), _ = cv2.phaseCorrelate(rg, tg)
+    (dx, dy), response = cv2.phaseCorrelate(tg, rg)
+    logging.debug(f"    [PhaseCorr] response={response:.3f}, dx={dx:.2f}, dy={dy:.2f}")
+    if response < 0.5:
+        return None
     return Vector(dx, dy)
 
 
@@ -521,7 +524,5 @@ def detect_mask_phase_shift(
         ref_img,
         ref_circle,
     )
-    if abs(shift.x) <= 1e-3 and abs(shift.y) <= 1e-3:
-        return None
     logging.info(f"Masked PhaseCorr")
     return shift

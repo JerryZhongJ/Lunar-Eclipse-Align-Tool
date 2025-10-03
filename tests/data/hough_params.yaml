@@ -14,7 +14,7 @@ param_sets:
     minRadius: 150
     maxRadius: 315
     param1: 80
-    param2: 35
+    param2: 25
 
   dark_moon:
     description: "暗淡月亮 - 低边缘敏感度，检测更多细节"

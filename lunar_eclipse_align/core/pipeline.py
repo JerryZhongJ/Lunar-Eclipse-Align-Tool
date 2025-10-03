@@ -196,10 +196,9 @@ def align(
         shift := advanced_detect_shift(img, ref_img, ref_circle)
     ):
         img = do_shift(img, shift)
-    # 原来的版本写错了，masked_phase_corr里面渐变的方向写反了
-    # 导致两张图在相同地方有尖锐的边缘，相位对齐没生效
-    # if shift := detect_mask_phase_shift(img, ref_img, ref_circle):
-    #     img = do_shift(img, shift)
+
+    if shift := detect_mask_phase_shift(img, ref_img, ref_circle):
+        img = do_shift(img, shift)
     return img
 
 
@@ -223,7 +222,7 @@ def process_single_image(
         input_image,
         hough,
         strong_denoise=strong_denoise,
-        prev_circle=last_circle,
+        # prev_circle=last_circle,
     )
     logging.info(f"处理{input_file.path.name}耗时 {time.time()-start_time:.2f}s")
     if not circle:

@@ -43,7 +43,7 @@ def adaptive_preprocessing(
 ) -> tuple[NDArray, BrightnessMode]:
     """将图像转换为适合圆检测的灰度，并做适度增强。返回 (processed_gray, brightness_mode)"""
 
-    gray = img.normalized_gray
+    gray = img.gray_8bit
     mean_brightness = float(np.mean(gray))
     if brightness_mode == BrightnessMode.AUTO:
         if mean_brightness > 140:
@@ -101,7 +101,7 @@ def evaluate_circle_quality(gray: NDArray, circle: Circle) -> float:
     avg_edge = float(np.mean(edge_strengths))
     consistency = 1.0 / (1.0 + np.std(edge_strengths) / max(1.0, avg_edge))
     score = avg_edge * consistency
-    return float(min(100.0, score))
+    return float(score)
 
 
 # ============== 高光裁剪和星点抑制辅助 ==============
@@ -208,7 +208,7 @@ def build_analysis_mask(
     - 仅保留最大连通域
     返回 bool(H,W)。不影响主流程检测。
     """
-    gray = cv2.GaussianBlur(img.normalized_gray, (3, 3), 0)
+    gray = cv2.GaussianBlur(img.gray_8bit, (3, 3), 0)
 
     # Otsu 自动阈值
     _, otsu_mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -313,18 +313,18 @@ def hough_on_thumb_detect(gray: NDArray, params: HoughParams) -> Circle | None:
 
 # ------------------ ROI构建 ------------------
 def build_detection_roi(
-    processed: NDArray,
+    gray: NDArray,
     params: HoughParams,
     prev_circle: Circle | None,
 ) -> NDArray:
-    height, width = processed.shape[:2]
+    height, width = gray.shape[:2]
     # —— 粗估中心半径，构建环形 ROI —— #
-    est = rough_center_radius(processed, params.minRadius, params.maxRadius)
+    est = rough_center_radius(gray, params.minRadius, params.maxRadius)
     if est:
         inner = min((params.minRadius / est.radius) * 0.9, 0.85)
         outer = max(1.15, (params.maxRadius / est.radius) * 1.05)
         ring = ring_mask(width, height, est, inner=inner, outer=outer) * np.uint8(255)
-        processed = cv2.bitwise_and(processed, processed, mask=ring)
+        gray = cv2.bitwise_and(gray, gray, mask=ring)
 
     # —— 若给出上一帧圆心半径，合并一个"历史先验"环形 ROI —— #
     if prev_circle:
@@ -333,9 +333,9 @@ def build_detection_roi(
         ring_prev = ring_mask(
             width, height, prev_circle, inner=inner, outer=outer
         ) * np.uint8(255)
-        processed = cv2.bitwise_and(processed, processed, mask=ring_prev)
+        gray = cv2.bitwise_and(gray, gray, mask=ring_prev)
 
-    return processed
+    return gray
 
 
 # ------------------ 超时检测函数 ------------------

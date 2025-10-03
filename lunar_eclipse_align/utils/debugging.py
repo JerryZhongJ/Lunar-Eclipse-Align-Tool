@@ -99,16 +99,15 @@ def debug_draw_edge_points(
 
 def debug_show_edge(
     img_array: NDArray,
-    edge_points: PointArray,
-    color: tuple[int, int, int] = (0, 0, 255),
-    point_size: int = 2,
+    *edges: PointArray,
 ):
     # 转换为BGR显示
     img_bgr = debug_to_bgr(img_array)
     # 绘制边缘点
-    img_with_points = debug_draw_edge_points(img_bgr, edge_points, color, point_size)
+    for edge in edges:
+        img_bgr = debug_draw_edge_points(img_bgr, edge, color=(0, 0, 255), thickness=2)
 
     # 显示窗口
-    cv2.imshow("Debug View", img_with_points)
+    cv2.imshow("Debug View", img_bgr)
     cv2.waitKey(0)
     cv2.destroyAllWindows()

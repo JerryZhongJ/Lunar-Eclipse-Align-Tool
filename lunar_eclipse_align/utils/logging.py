@@ -56,7 +56,7 @@ class TextBrowserHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord):
         scrollbar = self.text_browser.verticalScrollBar()
-        was_at_bottom = scrollbar.value() >= scrollbar.maximum() - 5
+        was_at_bottom = scrollbar.value() >= (scrollbar.maximum() - 5)
 
         msg = self.format(record)
         # Append the message to the QTextBrowser

@@ -382,7 +382,7 @@ class Image:
         return self._bgr
 
     @property
-    def normalized_gray(self) -> NDArray[np.uint8]:
+    def gray_8bit(self) -> NDArray[np.uint8]:
         """获取灰度图像数据"""
         if self._normalized_gray is None:
             gray = cv2.cvtColor(self._rgb, cv2.COLOR_RGB2GRAY)

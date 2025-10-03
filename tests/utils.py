@@ -1,23 +1,24 @@
-from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+from pydantic import BaseModel
 
-from lunar_eclipse_align.utils.data_types import HoughParams
+from lunar_eclipse_align.utils.data_types import Circle, HoughParams
 
 
 TEST_DATA_DIR = Path(__file__).parent / "data"
 
 
-@dataclass(frozen=True)
-class ImageConfig:
-    @dataclass(frozen=True)
-    class Tolerance:
+class ImageConfig(BaseModel):
+    model_config = {"frozen": True}
+
+    class Tolerance(BaseModel):
+        model_config = {"frozen": True}
         center: float
         radius: float
 
-    @dataclass(frozen=True)
-    class ExpectedCircle:
+    class ExpectedCircle(BaseModel):
+        model_config = {"frozen": True}
         x: float
         y: float
         radius: float
@@ -26,11 +27,12 @@ class ImageConfig:
     default_params: str
     expected_result: ExpectedCircle
     description: str | None = None
-    tolerance: Tolerance = Tolerance(2.0, 3.0)
+    tolerance: Tolerance = Tolerance(center=2.0, radius=3.0)
 
 
-@dataclass(frozen=True)
-class ParamsConfig:
+class ParamsConfig(BaseModel):
+    model_config = {"frozen": True}
+
     param1: int
     param2: int
     minRadius: int
@@ -122,10 +124,12 @@ def format_failure_message(
     return msg
 
 
-def check_result(result, expected, tolerance):
+def check_result(
+    result: Circle,
+    expected: ImageConfig.ExpectedCircle,
+    tolerance: ImageConfig.Tolerance,
+):
     """检查结果是否在容差范围内"""
-    if result is None:
-        return False, None, None, None
 
     x_diff = abs(result.x - expected.x)
     y_diff = abs(result.y - expected.y)

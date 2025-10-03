@@ -66,7 +66,7 @@ def test_all_images(img_name):
 # ============ 测试2: 手动指定图像和参数 ============
 
 # 在这里修改你想测试的图像和参数
-MANUAL_TEST_IMAGE = "case2"  # 修改这里选择图像
+MANUAL_TEST_IMAGE = "left-top"  # 修改这里选择图像
 MANUAL_TEST_PARAM = "basic"  # 修改这里选择参数
 
 

@@ -88,7 +88,7 @@ class AlignmentThread(QThread):
             self.strong_denoise,
         )
 
-        self.finished.emit(True)
+        self.finished.emit(True, "所有图像处理完成！")
 
 
 class UniversalLunarAlignApp(QMainWindow):
