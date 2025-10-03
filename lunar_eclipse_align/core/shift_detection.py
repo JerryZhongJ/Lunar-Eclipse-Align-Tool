@@ -470,7 +470,7 @@ def make_multi_roi_shift(
     return shift
 
 
-def advanced_detect(
+def advanced_detect_shift(
     img: Image, ref_img: Image, ref_circle: Circle
 ) -> Vector[float] | None:
 
@@ -501,22 +501,21 @@ def masked_phase_corr(
 ) -> Vector:
     W, H = ref_img.widthXheight
 
-    mask = soft_disk_mask(H, W, circle, inner=inner, outer=outer).astype(np.float32)
+    mask = soft_disk_mask(H, W, circle, inner=inner, outer=outer)
 
-    rg = (ref_img.normalized_gray * mask).astype(np.float32)
-    tg = (img.normalized_gray * mask).astype(np.float32)
+    rg = ref_img.normalized_gray * mask
+    tg = img.normalized_gray * mask
 
     (dx, dy), _ = cv2.phaseCorrelate(rg, tg)
     return Vector(dx, dy)
 
 
-def mask_phase_detect(
+def detect_mask_phase_shift(
     img: Image,
     ref_img: Image,
     ref_circle: Circle,
 ) -> Vector[float] | None:
 
-    # 未启用高级：遮罩相位相关微调
     shift = masked_phase_corr(
         img,
         ref_img,
@@ -526,19 +525,3 @@ def mask_phase_detect(
         return None
     logging.info(f"Masked PhaseCorr")
     return shift
-
-
-def detect_refined_shift(
-    aligned_img: Image,
-    ref_img: Image,
-    ref_circle: Circle,
-    use_advanced_alignment: bool,
-) -> Vector[float] | None:
-    return (
-        use_advanced_alignment
-        and advanced_detect(
-            aligned_img,
-            ref_img,
-            ref_circle,
-        )
-    ) or mask_phase_detect(aligned_img, ref_img, ref_circle)

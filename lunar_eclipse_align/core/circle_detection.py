@@ -23,6 +23,7 @@ from lunar_eclipse_align.utils.data_types import (
     VectorArray,
 )
 from lunar_eclipse_align.utils.constants import (
+    RESIDUAL,
     THUMB_SIZE,
 )
 
@@ -75,8 +76,8 @@ def evaluate_circle_quality(gray: NDArray, circle: Circle) -> float:
     directions = VectorArray(
         np.column_stack((np.cos(angles), np.sin(angles))), safe=False
     )
-    inners: PointArray = directions * (circle.radius - 2.0) + circle.center
-    outers: PointArray = directions * (circle.radius + 2.0) + circle.center
+    inners: PointArray = directions * (circle.radius - RESIDUAL) + circle.center
+    outers: PointArray = directions * (circle.radius + RESIDUAL) + circle.center
     mask = (
         (0 <= inners.x)
         & (inners.x < w)
@@ -106,13 +107,13 @@ def evaluate_circle_quality(gray: NDArray, circle: Circle) -> float:
 # ============== 高光裁剪和星点抑制辅助 ==============
 def clip_highlights(gray: NDArray, pct: float = 99.8):
     """Clip very bright highlights (glare/bloom) to a percentile to help Hough/RANSAC."""
-    g = gray.astype(np.float32)
-    cap = np.percentile(g, pct)
+    gray_float = gray.astype(np.float32)
+    cap = np.percentile(gray_float, pct)
     if cap <= 0:
         return gray
-    g = np.minimum(g, cap)
-    g = g / (cap + 1e-6) * 255.0
-    return g.astype(np.uint8)
+    gray_float = np.minimum(gray_float, cap)
+    gray_float = gray_float / (cap + 1e-6) * 255.0
+    return gray_float.astype(np.uint8)
 
 
 def remove_stars_small(gray: NDArray):
@@ -277,6 +278,7 @@ def initial_process(
 
 
 def hough_on_thumb_detect(gray: NDArray, params: HoughParams) -> Circle | None:
+    logging.debug(f"缩放霍夫(thumb)")
     height, width = gray.shape[:2]
     max_side = max(height, width)
     circles = []
@@ -284,7 +286,7 @@ def hough_on_thumb_detect(gray: NDArray, params: HoughParams) -> Circle | None:
     if max_side > THUMB_SIZE:
         scale = THUMB_SIZE / max_side
         height, width = int(height * scale), int(width * scale)
-        logging.info(f"缩放霍夫(thumb)到 {width}x{height}")
+
         gray = cv2.resize(
             gray,
             (width, height),
@@ -338,6 +340,7 @@ def build_detection_roi(
 
 # ------------------ 超时检测函数 ------------------
 def timeout_fallback_detection(gray: NDArray, params: HoughParams) -> Circle | None:
+    logging.debug("超时降级(thumb)")
     height, width = gray.shape[:2]
     scale = min(1.0, 1600.0 / max(height, width))
     small_height, small_width = int(height * scale), int(width * scale)
@@ -360,7 +363,7 @@ def timeout_fallback_detection(gray: NDArray, params: HoughParams) -> Circle | N
     )
     if circles is None:
         return None
-    logging.info("超时降级(thumb)")
+
     circle = Circle.from_ndarray(circles[0][0]).scale(1 / scale)
     return circle
 
@@ -371,6 +374,7 @@ def timeout_fallback_detection(gray: NDArray, params: HoughParams) -> Circle | N
 def detect_circle_robust(
     gray: NDArray, prev_circle: Circle | None = None
 ) -> Circle | None:
+    logging.debug("稳健RANSAC")
     pts = edge_points_outer_rim(gray, prev_circle)
     if not pts:
         return None
@@ -380,7 +384,7 @@ def detect_circle_robust(
         data=pts._arr,
         model_class=CircleModel,
         min_samples=3,
-        residual_threshold=2.0,
+        residual_threshold=RESIDUAL,
         max_trials=120,
     )
     if model is None or inliers is None:
@@ -389,7 +393,6 @@ def detect_circle_robust(
         return None
     cx, cy, r = model.params  # CircleModel.params 返回 (xc, yc, r)
     cand = Circle(float(cx), float(cy), float(r))
-    logging.debug("稳健RANSAC")
     if prev_circle is None:
         return cand
     vectors = pts - cand.center
@@ -402,7 +405,7 @@ def detect_circle_robust(
 
 # ------------------ 标准霍夫检测 ------------------
 def standard_hough_detect(gray: NDArray, hough: HoughParams) -> Circle | None:
-
+    logging.debug("标准霍夫")
     height, width = gray.shape[:2]
     circles = cv2.HoughCircles(
         gray,
@@ -411,7 +414,6 @@ def standard_hough_detect(gray: NDArray, hough: HoughParams) -> Circle | None:
     )
     if circles is None:
         return None
-    logging.debug("标准霍夫")
     circle = Circle.from_ndarray(circles[0][0])
     return circle
 
@@ -432,6 +434,7 @@ def adaptive_hough_detect(
         params.param2 = max(params.param2 - 10, 5)
     else:
         params.param2 = max(params.param2 - 8, 8)
+    logging.debug(f"自适应霍夫(P1={params.param1},P2={params.param2})")
 
     circles = cv2.HoughCircles(
         gray,
@@ -441,7 +444,6 @@ def adaptive_hough_detect(
     if circles is None:
         return None
 
-    logging.debug(f"自适应霍夫(P1={params.param1},P2={params.param2})")
     circle = Circle.from_ndarray(circles[0][0])
     return circle
 
@@ -450,6 +452,8 @@ def adaptive_hough_detect(
 def contour_detect(gray: NDArray, hough: HoughParams) -> Circle | None:
     mean_val = float(np.mean(gray))
     tv = max(50, int(mean_val * 0.7))
+    logging.debug(f"轮廓检测(T={tv})")
+
     _, binary = cv2.threshold(gray, tv, 255, cv2.THRESH_BINARY)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
@@ -462,7 +466,7 @@ def contour_detect(gray: NDArray, hough: HoughParams) -> Circle | None:
         for cnt in contours
         if (c := cv2.minEnclosingCircle(cnt))
     ]
-    logging.debug(f"轮廓检测(T={tv})")
+
     for c in circles:
         if hough.minRadius <= c.radius <= hough.maxRadius:
             return c
@@ -475,7 +479,7 @@ def padding_fallback_detect(
     gray: NDArray,
     params: HoughParams,
 ) -> Circle | None:
-
+    logging.debug("Padding降级")
     pad = int(max(32, round(params.maxRadius * 1.2)))
     padded_gray = cv2.copyMakeBorder(
         gray,
@@ -516,7 +520,6 @@ def padding_fallback_detect(
     if circles is None:
         return detect_circle_robust(padded_gray)
     circle = Circle.from_ndarray(circles[0][0])
-    logging.debug("Padding降级")
     return circle
 
 
@@ -525,7 +528,7 @@ def final_detect(
     gray: NDArray,
     params: HoughParams,
 ) -> Circle | None:
-
+    logging.debug("最终验证")
     # 在严格窗口内再做一次快速霍夫重试
     height, width = gray.shape
 
@@ -545,7 +548,7 @@ def final_detect(
     circle = Circle.from_ndarray(circles[0][0])
     if not (params.minRadius <= circle.radius <= params.maxRadius):
         return None
-    logging.debug("最终验证")
+
     return circle
 
 
@@ -631,10 +634,8 @@ def detect_circle(
     if not best_circle:
         logging.error(f"  ✗ 圆检测失败")
         return None
-
-    logging.info(
-        f"  ○  圆检测成功 (质量={best_quality:.1f}, 半径={best_circle.radius:.1f}px）"
-    )
+    logging.info(f"  ○  圆检测成功")
+    logging.debug(f"{str(best_circle)=}, {best_quality=:.2f}, {brightness_mode=}")
 
     return best_circle
 

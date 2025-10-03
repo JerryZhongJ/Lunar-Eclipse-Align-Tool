@@ -17,7 +17,10 @@ from lunar_eclipse_align.core.circle_detection import (
     detect_circle_quick,
 )
 
-from lunar_eclipse_align.core.shift_detection import detect_refined_shift
+from lunar_eclipse_align.core.shift_detection import (
+    advanced_detect_shift,
+    detect_mask_phase_shift,
+)
 
 # ------------------ 调试图保存 ------------------
 # def save_debug_image(
@@ -164,10 +167,10 @@ def get_reference_circle(
     return ref_circle, reference_file
 
 
-def align(img: Image, shift: Vector[float]) -> Image:
+def do_shift(img: Image, shift: Vector[float]) -> Image:
     M = np.array([[1, 0, shift.x], [0, 1, shift.y]], dtype=np.float32)
 
-    aligned_rgb = cv2.warpAffine(
+    shifted = cv2.warpAffine(
         img.rgb,
         M,
         img.widthXheight,
@@ -175,7 +178,29 @@ def align(img: Image, shift: Vector[float]) -> Image:
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=0,
     )
-    return Image(rgb=aligned_rgb)
+    return Image(rgb=shifted)
+
+
+def align(
+    img: Image,
+    circle: Circle,
+    ref_img: Image,
+    ref_circle: Circle,
+    use_advanced_alignment: bool,
+) -> Image:
+    shift = ref_circle.center - circle.center
+    logging.info(f"初始对齐: shift=({shift.x:.1f},{shift.y:.1f})")
+    img = do_shift(img, shift)
+
+    if use_advanced_alignment and (
+        shift := advanced_detect_shift(img, ref_img, ref_circle)
+    ):
+        img = do_shift(img, shift)
+    # 原来的版本写错了，masked_phase_corr里面渐变的方向写反了
+    # 导致两张图在相同地方有尖锐的边缘，相位对齐没生效
+    # if shift := detect_mask_phase_shift(img, ref_img, ref_circle):
+    #     img = do_shift(img, shift)
+    return img
 
 
 # ------------------ 单图像处理 ------------------
@@ -204,20 +229,11 @@ def process_single_image(
     if not circle:
         return None
 
-    shift = ref_circle.center - circle.center
-
-    logging.info(f"初始对齐: shift=({shift.x:.1f},{shift.y:.1f})")
-    output_image = align(input_image, shift)
-
-    refined_shift = detect_refined_shift(
-        output_image, ref_image, ref_circle, use_advanced_alignment
+    output_image = align(
+        input_image, circle, ref_image, ref_circle, use_advanced_alignment
     )
-    if refined_shift:
-        output_image = align(output_image, refined_shift)
-
     output_image.icc = input_image.icc
     output_file = ImageFile(output_dir / f"{input_file.path.name}", mode="w")
-
     # 保存
     output_file.image = output_image
     output_file.save()

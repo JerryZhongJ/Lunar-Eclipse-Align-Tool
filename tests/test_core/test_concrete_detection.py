@@ -7,7 +7,6 @@ import pytest
 from pathlib import Path
 from lunar_eclipse_align.core.circle_detection import (
     detect_circle,
-    detect_circle_quick,
     detect_circle_robust,
     standard_hough_detect,
     adaptive_hough_detect,

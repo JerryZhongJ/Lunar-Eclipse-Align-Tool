@@ -16,5 +16,5 @@ THUMB_SIZE = 1600  # 图像最长边缩略尺寸
 MAX_REFINE_DELTA_PX = 6.0
 MIN_MEAN_ZNCC = 0.55
 MIN_INLIERS = 6
-
+RESIDUAL = 2.0
 DEBUG = bool(os.environ.get("DEBUG", False))

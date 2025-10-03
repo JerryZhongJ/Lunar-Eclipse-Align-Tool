@@ -41,6 +41,7 @@ from lunar_eclipse_align.ui.debug_window import DebugWindow
 from lunar_eclipse_align.ui.preview_window import PreviewWindow, ProgressWindow
 from lunar_eclipse_align.utils.constants import SUPPORTED_EXTS, SYSTEM
 from lunar_eclipse_align.utils.data_types import HoughParams
+from lunar_eclipse_align.utils.logging import enable_gui_logging
 
 
 # 定义信号用于线程间通信
@@ -53,7 +54,6 @@ class ProgressSignal(QObject):
 class AlignmentThread(QThread):
     """对齐处理线程"""
 
-    progress_signal = Signal(int, str)
     finished = Signal(bool, str)  # 是否成功，消息
 
     def __init__(
@@ -77,24 +77,18 @@ class AlignmentThread(QThread):
 
     def run(self):
         """执行对齐处理"""
-        try:
-            # 创建进度回调函数
-            def progress_callback(pct, status):
-                self.progress_signal.emit(pct, status)
 
-            # 执行对齐处理
-            result = process_images(
-                self.in_path,
-                self.out_path,
-                self.hough,
-                # progress_callback,
-                self.ref_path,
-                self.use_advanced,
-                self.strong_denoise,
-            )
+        # 执行对齐处理
+        process_images(
+            self.in_path,
+            self.out_path,
+            self.hough,
+            self.ref_path,
+            self.use_advanced,
+            self.strong_denoise,
+        )
 
-        except Exception as e:
-            self.finished.emit(False, str(e))
+        self.finished.emit(True)
 
 
 class UniversalLunarAlignApp(QMainWindow):
@@ -349,8 +343,8 @@ class UniversalLunarAlignApp(QMainWindow):
         self.log_browser = QTextBrowser()
         self.log_browser.setReadOnly(True)
         self.log_browser.setMaximumHeight(200)
-
         parent_layout.addWidget(self.log_browser)
+        enable_gui_logging(self.log_browser)
 
     def _connect_signals(self):
         """连接信号"""
@@ -517,20 +511,10 @@ class UniversalLunarAlignApp(QMainWindow):
         )
 
         # 连接信号
-        self.alignment_thread.progress_signal.connect(self.update_progress)
-        self.alignment_thread.finished.connect(self.on_alignment_complete)
+        self.alignment_thread.finished.connect(self.on_task_complete)
 
         # 启动线程
         self.alignment_thread.start()
-
-    def update_progress(self, progress, status):
-        """更新进度"""
-        # 更新进度窗口
-        if self.progress_window and self.progress_window.isVisible():
-            self.progress_window.update_progress(progress, status)
-
-        # 同时在日志中显示
-        self.log_browser.append(f"进度: {progress}% - {status}")
 
     def show_progress_window(self):
         """显示进度窗口"""
@@ -538,7 +522,7 @@ class UniversalLunarAlignApp(QMainWindow):
             self.progress_window = ProgressWindow(self)
         return self.progress_window
 
-    def on_alignment_complete(self, success, message):
+    def on_task_complete(self, success, message):
         """对齐完成"""
         # 恢复按钮状态
         self.start_btn.setEnabled(True)

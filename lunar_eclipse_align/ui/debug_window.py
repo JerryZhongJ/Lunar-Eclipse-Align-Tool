@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
     QPushButton,
     QMessageBox,
+    QLabel,
 )
 from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
@@ -61,6 +62,7 @@ class DebugWindow(QDialog):
         self.current_scale = 1.0
 
         self.show_mask: bool = False
+        self.filename_label: QLabel | None = None
 
         self._setup_ui()
         self._center_window()
@@ -105,6 +107,12 @@ class DebugWindow(QDialog):
         self.next_button.setToolTip("下一张图片")
         self.next_button.clicked.connect(self._on_next_image)
         toolbar1_layout.addWidget(self.next_button)
+
+        # 文件名显示Label
+        self.filename_label = QLabel("未加载图片")
+        self.filename_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.filename_label.setStyleSheet("font-weight: bold; font-size: 12pt;")
+        toolbar1_layout.addWidget(self.filename_label)
 
         toolbar1_layout.addStretch()
 
@@ -174,7 +182,14 @@ class DebugWindow(QDialog):
     def debug_display_image(self):
         if not (0 <= self.current_index < len(self.image_files)):
             return
-        img = self.image_files[self.current_index][1].image
+
+        # 更新文件名显示
+        current_path, imgfile = self.image_files[self.current_index]
+        logging.info(f"Debug图片：{str(current_path)}")
+        if self.filename_label:
+            self.filename_label.setText(current_path.name)
+
+        img = imgfile.image
         if img is None:
             return
         self.refresh_pixmap()
@@ -196,6 +211,8 @@ class DebugWindow(QDialog):
         self.drawed_center: QGraphicsEllipseItem | None = None
         self.drawed_circle: QGraphicsEllipseItem | None = None
         self.current_pixmap: QGraphicsPixmapItem | None = None
+        if self.filename_label:
+            self.filename_label.setText("未加载图片")
 
     def refresh_pixmap(self):
         """刷新显示"""

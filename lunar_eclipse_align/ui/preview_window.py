@@ -12,7 +12,7 @@ from lunar_eclipse_align.core.circle_detection import detect_circle, detect_circ
 from lunar_eclipse_align.utils.image import Image, ImageFile
 from lunar_eclipse_align.ui.select_rect import InteractiveGraphicsView
 from lunar_eclipse_align.utils.constants import SUPPORTED_EXTS
-from lunar_eclipse_align.utils.data_types import Circle, Vector
+from lunar_eclipse_align.utils.data_types import ZERO, Circle, Vector
 
 if TYPE_CHECKING:
     from lunar_eclipse_align.ui.main_window import UniversalLunarAlignApp
@@ -100,7 +100,7 @@ class PreviewWindow(QDialog):
         toolbar1_layout.addWidget(QLabel("增减范围: "))
         self.delta_spin = QSpinBox()
         self.delta_spin.setRange(0, 100)
-        self.delta_spin.setValue(10)
+        self.delta_spin.setValue(5)
         toolbar1_layout.addWidget(self.delta_spin)
         toolbar1_layout.addWidget(QLabel("%"))
 
@@ -195,8 +195,8 @@ class PreviewWindow(QDialog):
 
         # 图像显示区域 - 使用新的交互式视图
         self.graphics_view = InteractiveGraphicsView()
-        self.graphics_view.rect_drawed.connect(self.detect_radius)
-        self.graphics_view.rect_resized.connect(self.detect_radius)
+        self.graphics_view.rect_drawed.connect(self.detect_circle_n_draw)
+        self.graphics_view.rect_resized.connect(self.detect_circle_n_draw)
         self.graphics_scene = QGraphicsScene()
         self.graphics_view.setScene(self.graphics_scene)
         self.graphics_view.setBackgroundBrush(QBrush(QColor(51, 51, 51)))
@@ -220,8 +220,8 @@ class PreviewWindow(QDialog):
         # 连接信号
         self.param1_slider.valueChanged.connect(self._on_param_changed)
         self.param2_slider.valueChanged.connect(self._on_param_changed)
-        self.param1_slider.sliderReleased.connect(self.detect_radius)
-        self.param2_slider.sliderReleased.connect(self.detect_radius)
+        self.param1_slider.sliderReleased.connect(self.detect_circle_n_draw)
+        self.param2_slider.sliderReleased.connect(self.detect_circle_n_draw)
 
     def _on_param_changed(self):
         """参数变化时直接更新主窗口参数并刷新显示"""
@@ -302,6 +302,7 @@ class PreviewWindow(QDialog):
         # 清除场景并添加新图像
         self.graphics_scene.addPixmap(pixmap)
         self.preview_scale = scale
+        self.detect_circle_n_draw()
 
     def _draw_circle(self, circle: Circle):
         """绘制检测到的圆"""
@@ -328,58 +329,58 @@ class PreviewWindow(QDialog):
             QBrush(QColor(255, 77, 79)),
         )
 
-    def detect_radius(self):
-        """检测半径"""
+    def detect_circle_n_draw(self):
+        """检测圆并绘制"""
         if self.preview_img is None:
             return
+        img = self.preview_img
+        delta = ZERO
+        max_side = max(img.width, img.height)
+        if self.graphics_view.current_rect:
+            # 获取矩形区域（场景坐标）
+            rect = self.graphics_view.current_rect.rect()
 
-        if self.graphics_view.current_rect is None:
-            return
+            # 转换为图像坐标
+            scale = self.preview_scale
 
-        # 获取矩形区域（场景坐标）
-        rect = self.graphics_view.current_rect.rect()
+            x, y, width, height = rect.x(), rect.y(), rect.width(), rect.height()
 
-        # 转换为图像坐标
-        scale = self.preview_scale
+            top, left, bottom, right = (
+                y / scale,
+                x / scale,
+                (y + height) / scale,
+                (x + width) / scale,
+            )
+            logging.debug(
+                f"预览：矩形区域 {top=:.2f}, {left=:.2f}, {bottom=:.2f}, {right=:.2f}"
+            )
+            # 估计半径和中心
+            img = Image(
+                rgb=self.preview_img.rgb[
+                    int(top) : int(bottom),
+                    int(left) : int(right),
+                ]
+            )
+            max_side = max(img.width, img.height)
+            # 直接使用主窗口的参数，只临时修改半径范围用于检测
 
-        x, y, width, height = rect.x(), rect.y(), rect.width(), rect.height()
+            delta = Vector(left, top)
 
-        top, left, bottom, right = (
-            y / scale,
-            x / scale,
-            (y + height) / scale,
-            (x + width) / scale,
-        )
-        logging.debug(
-            f"预览：矩形区域 {top=:.2f}, {left=:.2f}, {bottom=:.2f}, {right=:.2f}"
-        )
-        # 估计半径和中心
-        crop_img = Image(
-            rgb=self.preview_img.rgb[
-                int(top) : int(bottom),
-                int(left) : int(right),
-            ]
-        )
-        max_side = max(crop_img.width, crop_img.height)
-        # 直接使用主窗口的参数，只临时修改半径范围用于检测
-
-        self.params.minRadius = max_side // 20  # 临时设置检测用的半径范围
+        self.params.minRadius = max_side // 5  # 临时设置检测用的半径范围
         self.params.maxRadius = max_side // 2
 
-        circle = detect_circle_quick(
-            crop_img, self.params, self.app.enable_strong_denoise
-        )
+        circle = detect_circle_quick(img, self.params, self.app.enable_strong_denoise)
         if not circle:
             logging.error("预览：圆检测失败")
             return
             # 回退到估计值
-        delta = Vector(left, top)
+
         self.detected_circle = circle.shift(delta)
-        logging.info(
-            f"预览：检测到圆:（圆心: {self.detected_circle.x:.2f}, {self.detected_circle.y:.2f}，半径: {self.detected_circle.radius:.2f} px）"
-        )
+        logging.info(f"预览：检测到圆")
+        logging.debug(str(self.detected_circle))
+
         # 重新绘制以显示检测结果
-        self._draw_circle(self.detected_circle.scale(scale))
+        self._draw_circle(self.detected_circle.scale(self.preview_scale))
 
         # 更新标签
 
@@ -400,6 +401,11 @@ class PreviewWindow(QDialog):
         max_r = max(2, int(r * (1 + delta)))
         self.params.minRadius = min_r
         self.params.maxRadius = max_r
+
+        logging.info(
+            f"应用预览参数: 最小半径 {min_r}， 最大半径 {max_r}， param1 {self.params.param1}, param2 {self.params.param2}"
+        )
+        logging.info(f"设置参考图像: {str(self.current_path)}")
         # 更新主窗口显示
         self.app.update_hough_params(self.params)
 
