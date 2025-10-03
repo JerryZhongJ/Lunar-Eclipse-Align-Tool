@@ -200,28 +200,44 @@ def build_analysis_mask(
     brightness_min: float = 3 / 255.0,
 ) -> NDArray[np.bool]:
     """
-    仅供 UI 调参窗口显示“分析区域”用：
+    仅供 UI 调参窗口显示"分析区域"用：
     - uint8 归一化 -> 轻度去噪
     - Otsu 阈值 与 亮度下限并联
     - 形态学开运算清点
     - 仅保留最大连通域
     返回 bool(H,W)。不影响主流程检测。
     """
-    gray = img.normalized_gray
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
-    _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    floor_t = max(1, int(round(brightness_min * 255.0)))
-    _, floor = cv2.threshold(gray, floor_t, 255, cv2.THRESH_BINARY)
-    m = cv2.bitwise_and(otsu, floor)
-    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, k, iterations=1)
-    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not cnts:
-        return np.zeros_like(m, dtype=bool)
-    c = max(cnts, key=cv2.contourArea)
-    keep = np.zeros_like(m)
-    cv2.drawContours(keep, [c], -1, 255, thickness=cv2.FILLED)
-    return keep.astype(bool)
+    gray = cv2.GaussianBlur(img.normalized_gray, (3, 3), 0)
+
+    # Otsu 自动阈值
+    _, otsu_mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # 亮度下限阈值
+    brightness_threshold = max(1, int(round(brightness_min * 255.0)))
+    _, brightness_mask = cv2.threshold(
+        gray, brightness_threshold, 255, cv2.THRESH_BINARY
+    )
+
+    # 两个掩码取交集
+    combined_mask = cv2.bitwise_and(otsu_mask, brightness_mask)
+
+    # 形态学开运算去噪
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    cleaned_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    # 找到所有轮廓
+    contours, _ = cv2.findContours(
+        cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if not contours:
+        return np.zeros_like(cleaned_mask, dtype=bool)
+
+    # 保留最大连通域
+    largest_contour = max(contours, key=cv2.contourArea)
+    final_mask = np.zeros_like(cleaned_mask)
+    cv2.drawContours(final_mask, [largest_contour], -1, 255, thickness=cv2.FILLED)
+
+    return final_mask.astype(bool)
 
 
 # ============== 主检测（供 pipeline 调用） ==============

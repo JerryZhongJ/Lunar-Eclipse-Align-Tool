@@ -215,17 +215,12 @@ class DebugWindow(QDialog):
             # 构建分析掩膜
             mask: NDArray[np.bool] = build_analysis_mask(img, brightness_min=3 / 255.0)
 
-            W, H = img.widthXheight
-            if mask.shape != (H, W):
-                mask = cv2.resize(mask, (W, H), interpolation=cv2.INTER_NEAREST)
-
             # 创建红色叠加
-            red_overlay = img.rgb_8bit.copy()
-            red_overlay[:, :, 0] = 255
-            red_overlay[:, :, 1] = 0
-            red_overlay[:, :, 2] = 0
+            red_overlay: NDArray[np.uint8] = np.full_like(
+                display_rgb, [0, 0, 255], dtype=np.uint8
+            )
 
-            alpha = (mask.astype(np.float32) / 255.0) * 0.35
+            alpha = mask.astype(np.float32) * 0.35
             alpha = alpha[:, :, np.newaxis]
 
             display_rgb = (display_rgb * (1 - alpha) + red_overlay * alpha).astype(
@@ -274,6 +269,7 @@ class DebugWindow(QDialog):
         self.drawed_circle = self.graphics_scene.addEllipse(
             cx - r, cy - r, 2 * r, 2 * r, QPen(QColor(255, 77, 79), 2)
         )
+        self.drawed_circle.setZValue(1)
 
         # 画圆心
         self.drawed_center = self.graphics_scene.addEllipse(
@@ -284,3 +280,4 @@ class DebugWindow(QDialog):
             QPen(Qt.PenStyle.NoPen),
             QBrush(QColor(255, 77, 79)),
         )
+        self.drawed_center.setZValue(1)
