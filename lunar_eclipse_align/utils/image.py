@@ -14,6 +14,10 @@ import gc
 from lunar_eclipse_align.utils.constants import SUPPORTED_EXTS
 import tifffile
 
+# exif的保留比较麻烦，现在的问题是exif和位深度很难两全
+# 第三方库要么支持16bit，要么支持exif写入
+# 想要完美保留exif，目前只能借助exiftool之类的外部工具
+
 
 class ImageFileIO(ABC):
     @staticmethod
@@ -308,6 +312,7 @@ class FallbackIO(ImageFileIO):
 
 class Image:
     _rgb: NDArray
+    _rgb_8bit: NDArray | None = None
     _bgr: NDArray | None = None
     icc: bytes | None
     _normalized_gray: NDArray | None = None
@@ -360,6 +365,14 @@ class Image:
     def rgb(self) -> NDArray:
         """获取 RGB 格式的图像数据"""
         return self._rgb
+
+    @property
+    def rgb_8bit(self) -> NDArray:
+        if self._rgb.dtype == np.uint8:
+            return self._rgb
+        if self._rgb_8bit is None:
+            self._rgb_8bit = (self._rgb / 256).astype(np.uint8)
+        return self._rgb_8bit
 
     @property
     def bgr(self) -> NDArray:

@@ -93,19 +93,3 @@ NUMBER = TypeVar("NUMBER", int, float)
 
 def clip(min_value: NUMBER, value: NUMBER, max_value: NUMBER) -> NUMBER:
     return max(min_value, min(value, max_value))
-
-
-def debug_show(img_array: NDArray, title="Debug Image"):
-    """使用OpenCV显示图像进行调试（仅在DEBUG模式下可用）"""
-    if not DEBUG:
-        return
-
-    # 转换为OpenCV显示格式
-    if len(img_array.shape) == 2:  # 灰度图
-        display_img = cv2.cvtColor(img_array, cv2.COLOR_GRAY2BGR)
-    else:  # RGB图
-        display_img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-
-    cv2.imshow(title, display_img)
-    cv2.waitKey(0)  # 等待任意按键
-    cv2.destroyAllWindows()  # 关闭所有窗口

@@ -277,10 +277,9 @@ class PreviewWindow(QDialog):
         # 转换为QPixmap
         W, H = self.preview_img.widthXheight
         q_img = QImage(
-            self.preview_img.rgb.data,
+            self.preview_img.rgb_8bit.data,
             W,
             H,
-            self.preview_img.rgb.strides[0],
             QImage.Format.Format_RGB888,
         )
         pixmap = QPixmap.fromImage(q_img)
@@ -312,8 +311,6 @@ class PreviewWindow(QDialog):
         if self.drawed_center:
             self.graphics_scene.removeItem(self.drawed_center)
             self.drawed_center = None
-
-        # 应用预览缩放
 
         cx, cy, r = circle.x, circle.y, circle.radius
         # 画圆

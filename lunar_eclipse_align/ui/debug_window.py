@@ -24,6 +24,12 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QGraphicsView,
     QGraphicsScene,
+    QPushButton,
+    QMessageBox,
+)
+from PySide6.QtWidgets import (
+    QGraphicsEllipseItem,
+    QGraphicsPixmapItem,
 )
 from PySide6.QtCore import (
     Qt,
@@ -35,6 +41,7 @@ from PySide6.QtGui import (
     QColor,
     QPen,
     QBrush,
+    QIcon,
 )
 
 # 导入工具函数
@@ -51,18 +58,13 @@ class DebugWindow(QDialog):
         self.setMinimumSize(760, 520)
 
         # 图像数据
-        self.preview_scale = 1.0
-
-        self.current_dir: Path | None = None
-        self.image_file_iterator: Iterator[tuple[Path, ImageFile]] | None = None
-        self.current_path: Path | None = None
-        self.current_img: Image | None = None
-        self.image_files: dict[Path, ImageFile] = {}
+        self.current_scale = 1.0
 
         self.show_mask: bool = False
 
         self._setup_ui()
         self._center_window()
+        self.refresh()
 
     def _center_window(self):
         """居中显示窗口"""
@@ -83,6 +85,28 @@ class DebugWindow(QDialog):
         toolbar1 = QWidget()
         toolbar1_layout = QHBoxLayout(toolbar1)
         toolbar1_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 左箭头按钮
+        self.prev_button = QPushButton()
+        self.prev_button.setIcon(
+            self.style().standardIcon(self.style().StandardPixmap.SP_ArrowLeft)
+        )
+        self.prev_button.setFixedSize(40, 30)
+        self.prev_button.setToolTip("上一张图片")
+        self.prev_button.clicked.connect(self._on_prev_image)
+        toolbar1_layout.addWidget(self.prev_button)
+
+        # 右箭头按钮
+        self.next_button = QPushButton()
+        self.next_button.setIcon(
+            self.style().standardIcon(self.style().StandardPixmap.SP_ArrowRight)
+        )
+        self.next_button.setFixedSize(40, 30)
+        self.next_button.setToolTip("下一张图片")
+        self.next_button.clicked.connect(self._on_next_image)
+        toolbar1_layout.addWidget(self.next_button)
+
+        toolbar1_layout.addStretch()
 
         layout.addWidget(toolbar1)
 
@@ -108,65 +132,95 @@ class DebugWindow(QDialog):
     def showEvent(self, event):
         """窗口显示时自动弹出文件选择（仅当没有图像时）"""
         super().showEvent(event)
-        if self.current_dir != self.app.input_path:
-            self.refresh()
-            self.current_dir = self.app.input_path
+        if self.current_dir and self.current_dir == self.app.input_path:
+            return
 
-        if self.current_img is None:
-            # pick one image in the input directory
-            if not self.current_dir or not self.current_dir.is_dir():
-                return
-            self.image_files = ImageFile.load(self.current_dir)
-            self.image_file_iterator = iter(self.image_files.items())
-            try:
-                self.current_path, img_file = next(self.image_file_iterator)
-                self.current_img = img_file.image
-                self.debug_display_image()
-            except StopIteration:
-                pass
+        if self.app.input_path is None or not self.app.input_path.is_dir():
+            QMessageBox.warning(
+                self,
+                "错误",
+                "输入目录未设置！请先在主窗口中设置输入目录。",
+            )
+            event.ignore()
+            QTimer.singleShot(0, self.close)  # 延迟关闭窗口，避免事件冲突
+            return
+
+        self.refresh()
+        self.current_dir = self.app.input_path
+        # pick one image in the input directory
+        self.image_files = list(ImageFile.load(self.current_dir).items())
+        self.current_index = 0
+        QTimer.singleShot(100, self.debug_display_image)
 
     def on_show_mask_changed(self, state):
         """显示分析区域状态改变"""
         self.show_mask = state == Qt.CheckState.Checked.value
         self.refresh_pixmap()
 
+    def _on_prev_image(self):
+        """切换到上一张图片"""
+        if not self.image_files:
+            return
+        self.current_index = (self.current_index - 1) % len(self.image_files)
+        self.debug_display_image()
+
+    def _on_next_image(self):
+        """切换到下一张图片"""
+        if not self.image_files:
+            return
+        self.current_index = (self.current_index + 1) % len(self.image_files)
+        self.debug_display_image()
+
     def debug_display_image(self):
-        if self.current_img is None:
+        if not (0 <= self.current_index < len(self.image_files)):
+            return
+        img = self.image_files[self.current_index][1].image
+        if img is None:
             return
         self.refresh_pixmap()
         circle = detect_circle(
-            self.current_img,
+            img,
             self.app.params,
             strong_denoise=self.app.enable_strong_denoise,
         )
         if circle:
-            self._draw_circle(circle)
+            self._draw_circle(circle.scale(self.current_scale))
 
     def refresh(self):
-        self.current_dir = None
-        self.image_file_iterator = None
-        self.current_img = None
-        self.current_path = None
-        self.image_files = {}
+        self.graphics_scene.clear()
+        self.current_dir: Path | None = None
+        self.current_index: int = 0
+        self.image_files: list[tuple[Path, ImageFile]] = []
+        self.current_img: Image | None = None
+        self.current_path: Path | None = None
+        self.drawed_center: QGraphicsEllipseItem | None = None
+        self.drawed_circle: QGraphicsEllipseItem | None = None
+        self.current_pixmap: QGraphicsPixmapItem | None = None
 
     def refresh_pixmap(self):
         """刷新显示"""
-        self.graphics_scene.clear()
-        if self.current_img is None:
+        if not (0 <= self.current_index < len(self.image_files)):
             return
-        display_rgb = self.current_img.rgb
+        img = self.image_files[self.current_index][1].image
+        if img is None:
+            return
+        if self.current_pixmap:
+            self.graphics_scene.removeItem(self.current_pixmap)
+            self.current_pixmap = None
+
+        display_rgb = img.rgb_8bit
         # 如果显示分析区域
         if self.show_mask:
 
             # 构建分析掩膜
-            mask = build_analysis_mask(self.current_img, brightness_min=3 / 255.0)
+            mask: NDArray[np.bool] = build_analysis_mask(img, brightness_min=3 / 255.0)
 
-            W, H = self.current_img.widthXheight
+            W, H = img.widthXheight
             if mask.shape != (H, W):
                 mask = cv2.resize(mask, (W, H), interpolation=cv2.INTER_NEAREST)
 
             # 创建红色叠加
-            red_overlay = self.current_img.rgb.copy()
+            red_overlay = img.rgb_8bit.copy()
             red_overlay[:, :, 0] = 255
             red_overlay[:, :, 1] = 0
             red_overlay[:, :, 2] = 0
@@ -174,23 +228,17 @@ class DebugWindow(QDialog):
             alpha = (mask.astype(np.float32) / 255.0) * 0.35
             alpha = alpha[:, :, np.newaxis]
 
-            display_rgb = (
-                self.current_img.rgb * (1 - alpha) + red_overlay * alpha
-            ).astype(np.uint8)
+            display_rgb = (display_rgb * (1 - alpha) + red_overlay * alpha).astype(
+                np.uint8
+            )
         # 显示图像
         self.display_pixmap(display_rgb)
 
     def display_pixmap(self, rgb: NDArray):
         """显示图像"""
         # 转换为QPixmap
-        H, W, _ = rgb.shape[:2]
-        q_img = QImage(
-            rgb.data,
-            W,
-            H,
-            rgb.strides[0],
-            QImage.Format.Format_RGB888,
-        )
+        H, W = rgb.shape[:2]
+        q_img = QImage(rgb.data, W, H, QImage.Format.Format_RGB888)
         pixmap = QPixmap.fromImage(q_img)
 
         # 计算缩放
@@ -209,8 +257,8 @@ class DebugWindow(QDialog):
             )
 
         # 清除场景并添加新图像
-        self.graphics_scene.addPixmap(pixmap)
-        self.preview_scale = scale
+        self.current_pixmap = self.graphics_scene.addPixmap(pixmap)
+        self.current_scale = scale
 
     def _draw_circle(self, circle: Circle):
         """绘制检测到的圆"""
@@ -220,8 +268,6 @@ class DebugWindow(QDialog):
         if self.drawed_center:
             self.graphics_scene.removeItem(self.drawed_center)
             self.drawed_center = None
-
-        # 应用预览缩放
 
         cx, cy, r = circle.x, circle.y, circle.radius
         # 画圆
