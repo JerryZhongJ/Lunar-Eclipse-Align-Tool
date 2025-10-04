@@ -79,18 +79,22 @@ class AlignmentThread(QThread):
 
     def run(self):
         """执行对齐处理"""
+        try:
+            # 执行对齐处理
+            process_images(
+                self.in_path,
+                self.out_path,
+                self.hough,
+                self.ref_path,
+                self.use_advanced,
+                self.strong_denoise,
+            )
 
-        # 执行对齐处理
-        process_images(
-            self.in_path,
-            self.out_path,
-            self.hough,
-            self.ref_path,
-            self.use_advanced,
-            self.strong_denoise,
-        )
-
-        self.finished.emit(True, "所有图像处理完成！")
+            self.finished.emit(True, "所有图像处理完成！")
+        except Exception as e:
+            import traceback
+            error_msg = f"处理失败: {str(e)}\n\n详细错误:\n{traceback.format_exc()}"
+            self.finished.emit(False, error_msg)
 
 
 class UniversalLunarAlignApp(QMainWindow):

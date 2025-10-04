@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 import logging
 from pathlib import Path
 from time import time
+import threading
 import traceback
 from typing import Any, Literal, Mapping, Type
 from PIL import Image as PILImage
@@ -482,9 +483,11 @@ class ImageFile:
 
 
 __image_file_timestamps__: dict[ImageFile, float] = {}
+__image_file_lock__ = threading.Lock()
 
 
 def __drop_images__():
+    """卸载最旧的图像（必须在锁内调用）"""
     while len(__image_file_timestamps__) > MIN_KEEP_FILES:
         # 找到最旧的文件并卸载
         oldest_file = min(
@@ -496,11 +499,13 @@ def __drop_images__():
 
 
 def __touch_file__(file: ImageFile) -> None:
-    touch_time = time()
-    if file in __image_file_timestamps__:
+    """记录文件访问时间（线程安全）"""
+    with __image_file_lock__:
+        touch_time = time()
+        if file in __image_file_timestamps__:
+            __image_file_timestamps__[file] = touch_time
+
+        if len(__image_file_timestamps__) >= MAX_LOADED_FILES:
+            __drop_images__()
+
         __image_file_timestamps__[file] = touch_time
-
-    if len(__image_file_timestamps__) >= MAX_LOADED_FILES:
-        __drop_images__()
-
-    __image_file_timestamps__[file] = touch_time
