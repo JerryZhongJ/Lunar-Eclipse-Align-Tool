@@ -22,62 +22,6 @@ from lunar_eclipse_align.core.shift_detection import (
     detect_mask_phase_shift,
 )
 
-# ------------------ 调试图保存 ------------------
-# def save_debug_image(
-#     processed_img: NDArray,
-#     target_center: Position[float],
-#     reference_center: Position[float],
-#     shift: Vector[float],
-#     confidence,
-#     debug_dir: Path,
-#     filename,
-#     reference_filename,
-# ):
-#     try:
-#         if processed_img is None:
-#             return
-#         if processed_img.ndim == 2:
-#             debug_image = cv2.cvtColor(processed_img, cv2.COLOR_GRAY2BGR)
-#         else:
-#             debug_image = processed_img.copy()
-#         cv2.circle(
-#             debug_image,
-#             (int(target_center.x), int(target_center.y)),
-#             5,
-#             (0, 0, 255),
-#             -1,
-#         )
-#         cv2.circle(
-#             debug_image,
-#             (int(reference_center.x), int(reference_center.y)),
-#             15,
-#             (0, 255, 255),
-#             3,
-#         )
-#         cv2.line(
-#             debug_image,
-#             (int(target_center.x), int(target_center.y)),
-#             (int(reference_center.x), int(reference_center.y)),
-#             (0, 255, 255),
-#             2,
-#         )
-#         font = cv2.FONT_HERSHEY_SIMPLEX
-#         texts = [
-#             # f"Method: {method[:35]}",
-#             f"Shift: ({shift.x:.1f}, {shift.y:.1f})",
-#             f"Confidence: {confidence:.3f}",
-#             f"Reference: {reference_filename}",
-#             f"Mode: Incremental Processing",
-#         ]
-#         for j, t in enumerate(texts):
-#             cv2.putText(
-#                 debug_image, t, (10, 25 + j * 25), font, 0.6, (255, 255, 255), 2
-#             )
-#         debug_path = debug_dir / f"debug_{filename}"
-#         imwrite_unicode(debug_path, debug_image)
-#     except Exception as e:
-#         print(f"调试图像生成失败: {e}")
-
 
 def auto_select_reference(
     input_files: Iterable[ImageFile],

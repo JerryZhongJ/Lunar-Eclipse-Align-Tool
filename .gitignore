@@ -67,3 +67,5 @@ Thumbs.db
 temp/
 tmp/
 debug_output/
+
+images/*_aligned/

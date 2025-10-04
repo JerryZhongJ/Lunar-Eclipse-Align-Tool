@@ -1,4 +1,5 @@
 import logging
+from math import floor
 import os
 from pathlib import Path
 import threading
@@ -262,8 +263,8 @@ class DebugWindow(QDialog):
         )
         if scale < 1.0:
             pixmap = pixmap.scaled(
-                int(W * scale),
-                int(H * scale),
+                floor(W * scale),
+                floor(H * scale),
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )

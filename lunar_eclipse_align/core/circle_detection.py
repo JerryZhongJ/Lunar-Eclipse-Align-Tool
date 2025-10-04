@@ -1,6 +1,7 @@
 from enum import Enum
 
 import logging
+from math import ceil, floor
 
 import numpy as np
 import cv2
@@ -15,11 +16,8 @@ from lunar_eclipse_align.utils.tools import (
 from skimage.measure import CircleModel, ransac
 from lunar_eclipse_align.utils.data_types import (
     HoughParams,
-    Point,
     PointArray,
-    Vector,
     Circle,
-    ROI,
     VectorArray,
 )
 from lunar_eclipse_align.utils.constants import (
@@ -90,12 +88,11 @@ def evaluate_circle_quality(gray: NDArray, circle: Circle) -> float:
     )
     if not np.sum(mask):
         return 0.0
-
     inners = inners.filter(mask)
     outers = outers.filter(mask)
 
-    inner_vals = gray[inners.y.astype(int), inners.x.astype(int)]
-    outer_vals = gray[outers.y.astype(int), outers.x.astype(int)]
+    inner_vals = gray[np.round(inners.y).astype(int), np.round(inners.x).astype(int)]
+    outer_vals = gray[np.round(outers.y).astype(int), np.round(outers.x).astype(int)]
     edge_strengths = np.abs(outer_vals - inner_vals)
 
     avg_edge = float(np.mean(edge_strengths))
@@ -172,7 +169,7 @@ def edge_points_outer_rim(
 def rough_center_radius(gray: NDArray, min_r: float, max_r: float) -> Circle | None:
     g = cv2.GaussianBlur(gray, (0, 0), 2.0)
     # Use adaptive + Otsu fallback to handle glare/crescent
-    thr = max(10, int(np.mean(g) + 0.3 * np.std(g)))
+    thr = max(10, round(np.mean(g) + 0.3 * np.std(g)))
     _, bw1 = cv2.threshold(g, thr, 255, cv2.THRESH_BINARY)
     _, bw2 = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     bw_adap = cv2.adaptiveThreshold(
@@ -214,7 +211,7 @@ def build_analysis_mask(
     _, otsu_mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
     # 亮度下限阈值
-    brightness_threshold = max(1, int(round(brightness_min * 255.0)))
+    brightness_threshold = max(1, round(brightness_min * 255.0))
     _, brightness_mask = cv2.threshold(
         gray, brightness_threshold, 255, cv2.THRESH_BINARY
     )
@@ -285,7 +282,7 @@ def hough_on_thumb_detect(gray: NDArray, params: HoughParams) -> Circle | None:
     scale = 1.0
     if max_side > THUMB_SIZE:
         scale = THUMB_SIZE / max_side
-        height, width = int(height * scale), int(width * scale)
+        height, width = round(height * scale), round(width * scale)
 
         gray = cv2.resize(
             gray,
@@ -293,8 +290,8 @@ def hough_on_thumb_detect(gray: NDArray, params: HoughParams) -> Circle | None:
             interpolation=cv2.INTER_AREA,
         )
         params = HoughParams(
-            minRadius=max(1, int(params.minRadius * scale)),
-            maxRadius=max(2, int(params.maxRadius * scale)),
+            minRadius=max(1, floor(params.minRadius * scale)),
+            maxRadius=max(2, ceil(params.maxRadius * scale)),
             param1=params.param1,
             param2=max(params.param2 - 5, 10),
         )
@@ -343,15 +340,15 @@ def timeout_fallback_detection(gray: NDArray, params: HoughParams) -> Circle | N
     logging.debug("超时降级(thumb)")
     height, width = gray.shape[:2]
     scale = min(1.0, 1600.0 / max(height, width))
-    small_height, small_width = int(height * scale), int(width * scale)
+    small_height, small_width = round(height * scale), round(width * scale)
     small = cv2.resize(
         gray,
         (small_width, small_height),
         interpolation=cv2.INTER_AREA,
     )
     params = HoughParams(
-        minRadius=max(1, int(params.minRadius * scale)),
-        maxRadius=max(2, int(params.maxRadius * scale)),
+        minRadius=max(1, floor(params.minRadius * scale)),
+        maxRadius=max(2, ceil(params.maxRadius * scale)),
         param1=max(params.param1, 20),
         param2=max(params.param2 - 5, 8),
     )
@@ -404,13 +401,13 @@ def detect_circle_robust(
 
 
 # ------------------ 标准霍夫检测 ------------------
-def standard_hough_detect(gray: NDArray, hough: HoughParams) -> Circle | None:
+def standard_hough_detect(gray: NDArray, params: HoughParams) -> Circle | None:
     logging.debug("标准霍夫")
     height, width = gray.shape[:2]
     circles = cv2.HoughCircles(
         gray,
         minDist=height // 2,
-        **hough,
+        **params,
     )
     if circles is None:
         return None
@@ -451,7 +448,7 @@ def adaptive_hough_detect(
 # ------------------ 轮廓检测 ------------------
 def contour_detect(gray: NDArray, hough: HoughParams) -> Circle | None:
     mean_val = float(np.mean(gray))
-    tv = max(50, int(mean_val * 0.7))
+    tv = max(50, round(mean_val * 0.7))
     logging.debug(f"轮廓检测(T={tv})")
 
     _, binary = cv2.threshold(gray, tv, 255, cv2.THRESH_BINARY)
@@ -480,7 +477,7 @@ def padding_fallback_detect(
     params: HoughParams,
 ) -> Circle | None:
     logging.debug("Padding降级")
-    pad = int(max(32, round(params.maxRadius * 1.2)))
+    pad = max(32, round(params.maxRadius * 1.2))
     padded_gray = cv2.copyMakeBorder(
         gray,
         pad,
@@ -492,7 +489,7 @@ def padding_fallback_detect(
     )
     # Use constant black padding to avoid mirrored ghosts influencing Hough
     est = rough_center_radius(
-        padded_gray, int(params.minRadius * 1.1), int(params.maxRadius * 1.1)
+        padded_gray, floor(params.minRadius * 1.1), ceil(params.maxRadius * 1.1)
     )
     padded_gray = padded_gray
     if est is not None:
@@ -507,8 +504,8 @@ def padding_fallback_detect(
 
     height, width = padded_gray.shape[:2]
     params = HoughParams(
-        minRadius=int(max(1, params.minRadius * 1.1)),
-        maxRadius=int(max(2, params.maxRadius * 1.1)),
+        minRadius=max(1, floor(params.minRadius * 1.1)),
+        maxRadius=max(2, ceil(params.maxRadius * 1.1)),
         param1=max(params.param1, 20),
         param2=max(params.param2 - 5, 8),
     )
@@ -592,14 +589,6 @@ def detect_circle(
     # 3. 尝试稳健RANSAC检测
     update_best(detect_circle_robust(gray))
 
-    # # 4. 再次超时检查
-    # if time.time() - t0 > TIME_BUDGET:
-    #     best_circle, best_score = timeout_fallback_detection(
-    #         processed_det, processed, hough, int(H), int(W)
-    #     )
-    #     if best_circle is not None:
-    #         return best_circle, processed, best_score
-
     # 5. 尝试标准霍夫检测
     update_best(standard_hough_detect(masked_gray, params))
 
@@ -610,15 +599,6 @@ def detect_circle(
     # —— 轮廓备选 —— #
     if not best_circle or best_quality < 10:
         update_best(contour_detect(gray, params))
-
-    # —— padding-based fallback —— #
-    # if time.time() - t0 > TIME_BUDGET:
-    #     # 超时降级检测
-    #     best_circle, best_score = timeout_fallback_detection(
-    #         processed_det, processed, hough, int(H), int(W)
-    #     )
-    #     if best_circle is not None:
-    #         return best_circle, processed, best_score
 
     if (
         not best_circle

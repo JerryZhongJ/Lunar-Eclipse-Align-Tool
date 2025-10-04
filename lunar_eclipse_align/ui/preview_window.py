@@ -4,6 +4,7 @@ PySide6版本的窗口类
 包含调试窗口、预览窗口、进度窗口等
 """
 import logging
+from math import ceil, floor
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -293,8 +294,8 @@ class PreviewWindow(QDialog):
         )
         if scale < 1.0:
             pixmap = pixmap.scaled(
-                int(W * scale),
-                int(H * scale),
+                floor(W * scale),
+                floor(H * scale),
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
@@ -357,8 +358,8 @@ class PreviewWindow(QDialog):
             # 估计半径和中心
             img = Image(
                 rgb=self.preview_img.rgb[
-                    int(top) : int(bottom),
-                    int(left) : int(right),
+                    round(top) : round(bottom),
+                    round(left) : round(right),
                 ]
             )
             max_side = max(img.width, img.height)
@@ -384,7 +385,7 @@ class PreviewWindow(QDialog):
 
         # 更新标签
 
-        self.est_label.setText(f"估计半径: {int(self.detected_circle.radius)} px")
+        self.est_label.setText(f"估计半径: {self.detected_circle.radius:.2f} px")
 
     def apply_setting(self):
         """应用检测到的半径"""
@@ -397,8 +398,8 @@ class PreviewWindow(QDialog):
 
         delta = self.delta_spin.value() / 100
         r = self.detected_circle.radius
-        min_r = max(1, int(r * (1 - delta)))
-        max_r = max(2, int(r * (1 + delta)))
+        min_r = max(1, floor(r * (1 - delta)))
+        max_r = max(2, ceil(r * (1 + delta)))
         self.params.minRadius = min_r
         self.params.maxRadius = max_r
 
@@ -415,7 +416,7 @@ class PreviewWindow(QDialog):
         QMessageBox.information(
             self,
             "已应用",
-            f"检测半径: {int(r)} px\n"
+            f"检测半径: {self.detected_circle.radius:.2f} px\n"
             f"设置范围: {min_r} - {max_r}\n"
             f"边缘敏感度: {self.params.param1}\n"
             f"圆心阈值: {self.params.param2}\n"

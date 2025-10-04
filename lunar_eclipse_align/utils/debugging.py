@@ -27,8 +27,8 @@ def debug_draw_circle(
 ) -> NDArray:
     """在图像上绘制圆（仅在DEBUG模式下可用）"""
     bgr_array = bgr_array.copy()
-    center = (int(circle.x), int(circle.y))
-    radius = int(circle.radius)
+    center = (round(circle.x), round(circle.y))
+    radius = round(circle.radius)
     cv2.circle(bgr_array, center, radius, color, thickness)
     cv2.circle(bgr_array, center, 2, color, -1)  # 红色中心点
     return bgr_array
@@ -87,12 +87,9 @@ def debug_draw_edge_points(
     """
     bgr_array = bgr_array.copy()
 
-    # 将点坐标转换为整数
-    points = edge_points._arr.astype(int)
-
     # 用小圆圈画每个点
-    for x, y in points:
-        cv2.circle(bgr_array, (x, y), thickness, color, -1)
+    for point in edge_points:
+        cv2.circle(bgr_array, (round(point.x), round(point.y)), thickness, color, -1)
 
     return bgr_array
 

@@ -27,6 +27,6 @@ param_sets:
     description: "适用于basic/"
     minRadius: 229
     maxRadius: 253
-    param1: 60
+    param1: 30
     param2: 35
 

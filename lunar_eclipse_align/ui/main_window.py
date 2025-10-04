@@ -16,21 +16,23 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QSpinBox,
-    QSlider,
     QCheckBox,
     QTextBrowser,
     QFileDialog,
     QMessageBox,
     QComboBox,
     QGroupBox,
+    QDialog,
+    QFrame,
 )
 from PySide6.QtCore import (
     Qt,
     Signal,
     QThread,
     QObject,
+    QTimer,
 )
+from PySide6.QtGui import QPixmap
 
 
 # 导入工具函数
@@ -165,6 +167,8 @@ class UniversalLunarAlignApp(QMainWindow):
         layout.addWidget(QLabel("输入文件夹:"), 0, 0)
         self.input_edit = QLineEdit()
         self.input_edit.setPlaceholderText("选择包含月食图像的文件夹...")
+        self.input_edit.textChanged.connect(self.set_input_path)
+
         layout.addWidget(self.input_edit, 0, 1)
         self.input_browse_btn = QPushButton("浏览...")
         self.input_browse_btn.clicked.connect(self.select_input_folder)
@@ -174,6 +178,7 @@ class UniversalLunarAlignApp(QMainWindow):
         layout.addWidget(QLabel("输出文件夹:"), 1, 0)
         self.output_edit = QLineEdit()
         self.output_edit.setPlaceholderText("选择处理后图像的保存文件夹...")
+        self.output_edit.textChanged.connect(self.set_output_path)
         layout.addWidget(self.output_edit, 1, 1)
         self.output_browse_btn = QPushButton("浏览...")
         self.output_browse_btn.clicked.connect(self.select_output_folder)
@@ -183,20 +188,6 @@ class UniversalLunarAlignApp(QMainWindow):
         layout.addWidget(QLabel("参考图像:"), 2, 0)
         self.ref_label = QLabel("（在预览窗口选择）")
         layout.addWidget(self.ref_label, 2, 1)
-        # self.reference_edit = QLineEdit()
-        # self.reference_edit.setPlaceholderText("选择参考图像...")
-        # layout.addWidget(self.reference_edit, 2, 1)
-
-        # # 参考图像按钮布局
-        # ref_btn_layout = QHBoxLayout()
-        # ref_btn_layout.setContentsMargins(0, 0, 0, 0)
-        # self.reference_select_btn = QPushButton("选择")
-        # self.reference_select_btn.clicked.connect(self.select_reference_image)
-        # ref_btn_layout.addWidget(self.reference_select_btn)
-        # self.reference_clear_btn = QPushButton("清除")
-        # self.reference_clear_btn.clicked.connect(self.clear_reference_image)
-        # ref_btn_layout.addWidget(self.reference_clear_btn)
-        # layout.addLayout(ref_btn_layout, 2, 2)
 
         # 帮助提示和强力降噪选项
         help_layout = QHBoxLayout()
@@ -386,18 +377,24 @@ class UniversalLunarAlignApp(QMainWindow):
         enabled = self.advanced_check.isChecked()
         self.method_combo.setEnabled(enabled)
 
+    def set_input_path(self, text: str):
+        """设置输入路径"""
+        self.input_path = Path(text)
+
+        output_dir = self.input_path.parent / f"{self.input_path.name}_aligned"
+        self.output_edit.setText(str(output_dir))
+
+    def set_output_path(self, text: str):
+        """设置输出路径"""
+        self.output_path = Path(text)
+
     def select_input_folder(self):
         """选择输入文件夹"""
         folder = QFileDialog.getExistingDirectory(self, "选择输入文件夹")
-        if folder:
-            self.input_path = Path(folder)
-            self.input_edit.setText(str(self.input_path))
-            # 自动设置输出文件夹
+        if not folder:
+            return
 
-            name = self.input_path.name
-            output_dir = self.input_path.parent / f"{name}_aligned_v12b"
-            self.output_path = output_dir
-            self.output_edit.setText(str(self.output_path))
+        self.input_edit.setText(folder)
 
     def select_output_folder(self):
         """选择输出文件夹"""
@@ -405,37 +402,6 @@ class UniversalLunarAlignApp(QMainWindow):
         if folder:
             self.output_path = Path(folder)
             self.output_edit.setText(self.output_path.name)
-
-    # def select_reference_image(self):
-    #     """选择参考图像"""
-    #     initial_dir = (
-    #         self.input_path if self.input_path and self.input_path.is_dir() else Path()
-    #     )
-    #     file_filter = f"支持的图像 ( {' '.join(SUPPORTED_EXTS)} );;所有文件 (*.*)"
-
-    #     file_path, _ = QFileDialog.getOpenFileName(
-    #         self, "选择参考图像（用作对齐基准）", str(initial_dir), file_filter
-    #     )
-
-    #     file_path = Path(file_path)
-    #     # 检查是否在输入文件夹内
-    #     if self.input_path and not file_path.is_relative_to(self.input_path):
-    #         reply = QMessageBox.question(
-    #             self,
-    #             "确认",
-    #             "选择的参考图像不在输入文件夹内。\n建议选择输入文件夹中的图像作为参考。\n是否继续使用此图像？",
-    #             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-    #         )
-    #         if reply == QMessageBox.StandardButton.No:
-    #             return
-
-    #     self.reference_path = file_path
-    #     self.reference_edit.setText(file_path.name)
-
-    # def clear_reference_image(self):
-    #     """清除参考图像"""
-    #     self.reference_path = None
-    #     self.reference_edit.setText("")
 
     def open_preview(self):
         """打开预览窗口（复用现有窗口实例）"""
@@ -496,9 +462,6 @@ class UniversalLunarAlignApp(QMainWindow):
             "集成对齐中 (多ROI + PHD2)..." if use_advanced else "PHD2对齐中..."
         )
 
-        # 显示进度窗口
-        pw = self.show_progress_window()
-
         # 创建并启动处理线程
         self.alignment_thread = AlignmentThread(
             self.input_path,
@@ -522,21 +485,132 @@ class UniversalLunarAlignApp(QMainWindow):
             self.progress_window = ProgressWindow(self)
         return self.progress_window
 
-    def on_task_complete(self, success, message):
-        """对齐完成"""
-        # 恢复按钮状态
+    def on_task_complete(self, success: bool, message: str):
+
         self.start_btn.setEnabled(True)
         self.start_btn.setText("🚀 开始集成对齐")
 
-        # 显示结果
-        if success:
-            QMessageBox.information(self, "处理完成", message)
-        else:
-            QMessageBox.critical(
-                self, "处理失败", f"处理过程中发生错误，详情请查看日志。\n\n{message}"
-            )
+        def show_message():
+            if success:
+                QMessageBox.information(self, "处理完成", message)
+            else:
+                QMessageBox.critical(
+                    self,
+                    "处理失败",
+                    f"处理过程中发生错误，详情请查看日志。\n\n{message}",
+                )
+
+        QTimer.singleShot(0, show_message)
 
     def show_about_author(self):
         """显示关于作者窗口"""
-        # TODO: 实现关于作者窗口
-        QMessageBox.information(self, "关于作者", "关于作者功能正在开发中...")
+        dialog = QDialog(self)
+        dialog.setWindowTitle("关于作者")
+        dialog.setModal(True)
+
+        # 主布局
+        main_layout = QGridLayout(dialog)
+        main_layout.setContentsMargins(16, 16, 16, 16)
+
+        # 查找头像和二维码文件
+        base_dir = Path(__file__).parent.parent.parent
+        avatar_path = None
+        for name in ("avatar.jpg", "avatar.png", "avatar.jpeg"):
+            p = base_dir / name
+            if p.exists():
+                avatar_path = p
+                break
+
+        qr_path = None
+        for name in ("QRcode.jpg", "QRcode.png", "QRcode.jpeg"):
+            p = base_dir / name
+            if p.exists():
+                qr_path = p
+                break
+
+        # 左侧：标题+头像+描述
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 标题行（标题+头像）
+        header_widget = QWidget()
+        header_layout = QHBoxLayout(header_widget)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+
+        title_label = QLabel("正七价的氟离子")
+        title_label.setStyleSheet("font-size: 16pt; font-weight: bold;")
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+
+        # 头像
+        avatar_label = QLabel()
+        if avatar_path:
+            try:
+                pixmap = QPixmap(str(avatar_path))
+                if not pixmap.isNull():
+                    scaled_pixmap = pixmap.scaled(
+                        100, 100,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation
+                    )
+                    avatar_label.setPixmap(scaled_pixmap)
+            except Exception:
+                pass
+        header_layout.addWidget(avatar_label)
+
+        left_layout.addWidget(header_widget)
+
+        # 描述文本
+        desc_label = QLabel(
+            "在家带娃的奶妈，不会写程序的天文爱好者不是老司机。\n"
+            "感谢使用《月食圆面对齐工具》，欢迎反馈与交流！\n"
+            "如果您愿意，欢迎支持一点养娃的奶粉钱（右侧支付宝二维码）。"
+        )
+        desc_label.setWordWrap(True)
+        desc_label.setMaximumWidth(440)
+        left_layout.addWidget(desc_label)
+        left_layout.addStretch()
+
+        main_layout.addWidget(left_panel, 0, 0, 3, 1)
+
+        # 分隔线
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.VLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        main_layout.addWidget(separator, 0, 1, 3, 1)
+
+        # 右侧：二维码
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+
+        qr_label = QLabel()
+        if qr_path:
+            try:
+                pixmap = QPixmap(str(qr_path))
+                if not pixmap.isNull():
+                    scaled_pixmap = pixmap.scaled(
+                        240, 240,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation
+                    )
+                    qr_label.setPixmap(scaled_pixmap)
+            except Exception:
+                pass
+        right_layout.addWidget(qr_label)
+
+        qr_text = QLabel("支付宝 · 打赏支持")
+        qr_text.setStyleSheet("color: gray;")
+        qr_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        right_layout.addWidget(qr_text)
+
+        main_layout.addWidget(right_panel, 0, 2, 3, 1)
+
+        # 底部按钮
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dialog.accept)
+        main_layout.addWidget(close_btn, 3, 0, 1, 3, Qt.AlignmentFlag.AlignRight)
+
+        dialog.exec()
