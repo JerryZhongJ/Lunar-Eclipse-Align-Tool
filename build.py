@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # build.py
 """
 PyInstaller 构建脚本 - PySide6 版本
@@ -9,6 +10,12 @@ import platform
 import shutil
 from pathlib import Path
 from PyInstaller.__main__ import run
+
+# 设置 UTF-8 编码输出（修复 Windows 控制台中文显示）
+if sys.platform == "win32":
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 APP_NAME = "Lunar Eclipse Align Tool"
 ENTRY = "lunar_eclipse_align/main.py"
