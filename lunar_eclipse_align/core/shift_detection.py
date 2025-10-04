@@ -518,11 +518,11 @@ def detect_mask_phase_shift(
     ref_img: Image,
     ref_circle: Circle,
 ) -> Vector[float] | None:
-
+    logging.debug(f"Masked PhaseCorr")
     shift = masked_phase_corr(
         img,
         ref_img,
         ref_circle,
     )
-    logging.info(f"Masked PhaseCorr")
+
     return shift

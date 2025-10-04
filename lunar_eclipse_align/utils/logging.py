@@ -1,6 +1,7 @@
 import logging
 from lunar_eclipse_align.utils.constants import DEBUG
 from PySide6.QtWidgets import QTextBrowser
+from PySide6.QtCore import QObject, Signal
 
 
 class AnsiColorFormatter(logging.Formatter):
@@ -50,18 +51,37 @@ class HtmlFormatter(logging.Formatter):
 class TextBrowserHandler(logging.Handler):
     """A logging handler that outputs to a QTextBrowser widget."""
 
+    class Signaler(QObject):
+        """内部辅助类，专门处理信号"""
+
+        message_logged = Signal(str)
+
     def __init__(self, text_browser: QTextBrowser):
         super().__init__()
         self.text_browser = text_browser
 
+        # 创建内部信号对象
+        self._signaler = self.Signaler()
+        self._signaler.message_logged.connect(self._append_message)
+
     def emit(self, record: logging.LogRecord):
+        """logging.Handler 的 emit 方法"""
+        msg = self.format(record)
+        # 通过内部 signaler 发送 Qt 信号（线程安全）
+        self._signaler.message_logged.emit(msg)
+
+    def _append_message(self, msg: str):
+        """在主线程中执行 UI 更新"""
         scrollbar = self.text_browser.verticalScrollBar()
 
-        msg = self.format(record)
-        # Append the message to the QTextBrowser
+        # 记录滚动前是否在底部
+        at_bottom = scrollbar.value() >= scrollbar.maximum() - 10
+
         self.text_browser.append(msg)
 
-        scrollbar.setValue(scrollbar.maximum())
+        # 只有在底部时才自动滚动
+        if at_bottom:
+            scrollbar.setValue(scrollbar.maximum())
 
 
 def setup_logging():

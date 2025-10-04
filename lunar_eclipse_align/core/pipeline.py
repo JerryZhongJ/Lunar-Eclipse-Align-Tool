@@ -133,7 +133,7 @@ def align(
     use_advanced_alignment: bool,
 ) -> Image:
     shift = ref_circle.center - circle.center
-    logging.info(f"初始对齐: shift=({shift.x:.1f},{shift.y:.1f})")
+    logging.debug(f"初始对齐: shift=({shift.x:.1f},{shift.y:.1f})")
     img = do_shift(img, shift)
 
     if use_advanced_alignment and (
@@ -166,9 +166,9 @@ def process_single_image(
         input_image,
         hough,
         strong_denoise=strong_denoise,
-        # prev_circle=last_circle,
+        prev_circle=last_circle,
     )
-    logging.info(f"处理{input_file.path.name}耗时 {time.time()-start_time:.2f}s")
+    logging.info(f"处理{input_file.path.name} 耗时 {time.time()-start_time:.2f}s")
     if not circle:
         return None
 
