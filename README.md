@@ -11,8 +11,8 @@
 ### Windows 用户
 
 1. 前往 [Releases](../../releases) 页面
-2. 下载最新版本的 `LunarEclipseAlignTool-Windows.exe`
-3. 双击运行（首次运行可能需要允许 Windows Defender）
+2. 下载最新版本的 `LunarEclipseAlignTool-Windows.zip`
+3. 解压后运行 `Lunar Eclipse Align Tool.exe`（首次运行可能需要允许 Windows Defender）
 
 ### macOS 用户
 
