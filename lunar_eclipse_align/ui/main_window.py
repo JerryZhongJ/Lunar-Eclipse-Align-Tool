@@ -512,8 +512,8 @@ class UniversalLunarAlignApp(QMainWindow):
         main_layout = QGridLayout(dialog)
         main_layout.setContentsMargins(16, 16, 16, 16)
 
-        # 查找头像和二维码文件
-        base_dir = Path(__file__).parent.parent.parent
+        # 查找头像和二维码文件（从包内 resources 目录）
+        base_dir = Path(__file__).parent.parent / "resources"
         avatar_path = None
         for name in ("avatar.jpg", "avatar.png", "avatar.jpeg"):
             p = base_dir / name

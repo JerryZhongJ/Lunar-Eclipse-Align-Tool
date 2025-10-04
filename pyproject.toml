@@ -40,12 +40,16 @@ dependencies = [
 ]
 [project.optional-dependencies]
 test = ["pytest>=7.0", "pytest-qt>=4.0", "pytest-cov>=4.0", "pytest-env>=1.1.5", "pyyaml>=6.0", "pydantic>=2.0"]
-# dev = ["matplotlib>=3.5.0"]
+dev = ["pyinstaller>=6.0"]
+
 [project.scripts]
 lunar-eclipse-align = "lunar_eclipse_align.main:main"
 
 [tool.setuptools]
 packages = ["lunar_eclipse_align"]
+
+[tool.setuptools.package-data]
+lunar_eclipse_align = ["resources/*.jpg", "resources/*.png", "resources/*.jpeg"]
 
 
 # pytest 测试配置
