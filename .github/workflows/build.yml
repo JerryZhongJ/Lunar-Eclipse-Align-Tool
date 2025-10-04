@@ -46,9 +46,8 @@ jobs:
       if: matrix.os == 'windows-latest'
       run: |
         python build.py
-        # 打包成 zip
         cd dist
-        powershell Compress-Archive -Path "Lunar Eclipse Align Tool" -DestinationPath "LunarEclipseAlignTool-Windows.zip"
+        Compress-Archive -Path "Lunar Eclipse Align Tool" -DestinationPath "LunarEclipseAlignTool-Windows.zip"
 
     - name: Build with PyInstaller (macOS)
       if: matrix.os == 'macos-latest'

@@ -20,7 +20,7 @@ if sys.platform == "win32":
 
 APP_NAME = "Lunar Eclipse Align Tool"
 ENTRY = "lunar_eclipse_align/main.py"
-VERSION = "1.2.0"  # 可以从 __init__.py 读取
+from lunar_eclipse_align import __version__ as VERSION
 
 
 def sep():
