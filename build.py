@@ -82,7 +82,8 @@ def main():
         ENTRY,
         "--name",
         APP_NAME,
-        "--onefile",  # 单文件模式（可改为 --onedir）
+        # macOS .app bundles 必须使用 --onedir，其他平台可用 --onefile
+        "--onedir" if platform.system() == "Darwin" else "--onefile",
         "--windowed",  # GUI 程序，不显示控制台
         "--noconfirm",
         "--clean",
