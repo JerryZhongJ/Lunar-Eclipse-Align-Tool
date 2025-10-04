@@ -251,7 +251,7 @@ class DebugWindow(QDialog):
         """显示图像"""
         # 转换为QPixmap
         H, W = rgb.shape[:2]
-        q_img = QImage(rgb.data, W, H, QImage.Format.Format_RGB888)
+        q_img = QImage(rgb.data, W, H, rgb.strides[0], QImage.Format.Format_RGB888)
         pixmap = QPixmap.fromImage(q_img)
 
         # 计算缩放

@@ -281,6 +281,7 @@ class PreviewWindow(QDialog):
             self.preview_img.rgb_8bit.data,
             W,
             H,
+            self.preview_img.rgb_8bit.strides[0],
             QImage.Format.Format_RGB888,
         )
         pixmap = QPixmap.fromImage(q_img)
