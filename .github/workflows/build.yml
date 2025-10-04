@@ -19,8 +19,8 @@ jobs:
         include:
           - os: windows-latest
             platform: Windows
-            artifact_name: Lunar Eclipse Align Tool
-            asset_name: LunarEclipseAlignTool-Windows.zip
+            artifact_name: Lunar Eclipse Align Tool.exe
+            asset_name: LunarEclipseAlignTool-Windows.exe
 
           - os: macos-latest
             platform: macOS
@@ -44,11 +44,7 @@ jobs:
 
     - name: Build with PyInstaller (Windows)
       if: matrix.os == 'windows-latest'
-      run: |
-        python build.py
-        # 打包成 zip
-        cd dist
-        powershell Compress-Archive -Path "Lunar Eclipse Align Tool" -DestinationPath "LunarEclipseAlignTool-Windows.zip"
+      run: python build.py
 
     - name: Build with PyInstaller (macOS)
       if: matrix.os == 'macos-latest'
@@ -93,7 +89,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: LunarEclipseAlignTool-${{ matrix.platform }}-${{ steps.get_version.outputs.version }}
-        path: dist/LunarEclipseAlignTool-Windows.zip
+        path: dist/Lunar Eclipse Align Tool.exe
         if-no-files-found: error
 
     - name: Upload artifact (macOS)
@@ -108,7 +104,7 @@ jobs:
       if: startsWith(github.ref, 'refs/tags/') && matrix.os == 'windows-latest'
       uses: softprops/action-gh-release@v1
       with:
-        files: dist/LunarEclipseAlignTool-Windows.zip
+        files: dist/Lunar Eclipse Align Tool.exe
         draft: false
         prerelease: false
       env:
@@ -144,9 +140,8 @@ jobs:
           ### 下载
 
           #### Windows
-          - 📦 [LunarEclipseAlignTool-Windows.zip](https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/LunarEclipseAlignTool-Windows.zip)
-          - 解压后运行 `Lunar Eclipse Align Tool.exe`
-          - 首次可能需要允许 Windows Defender
+          - 📦 [LunarEclipseAlignTool-Windows.exe](https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/Lunar%20Eclipse%20Align%20Tool.exe)
+          - 双击运行，首次可能需要允许 Windows Defender
 
           #### macOS
           - 📦 [LunarEclipseAlignTool-macOS.dmg](https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/LunarEclipseAlignTool-macOS.dmg)
