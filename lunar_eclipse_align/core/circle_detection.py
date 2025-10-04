@@ -167,7 +167,7 @@ def edge_points_outer_rim(
 
 
 def rough_center_radius(gray: NDArray, min_r: float, max_r: float) -> Circle | None:
-    g = cv2.GaussianBlur(gray, (0, 0), 2.0)
+    g: NDArray = cv2.GaussianBlur(gray, (0, 0), 2.0)
     # Use adaptive + Otsu fallback to handle glare/crescent
     thr = max(10, round(np.mean(g) + 0.3 * np.std(g)))
     _, bw1 = cv2.threshold(g, thr, 255, cv2.THRESH_BINARY)
