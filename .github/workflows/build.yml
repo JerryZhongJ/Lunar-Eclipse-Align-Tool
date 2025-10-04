@@ -8,6 +8,12 @@ on:
 
   # 允许手动触发
   workflow_dispatch:
+    inputs:
+      debug_build:
+        description: '构建调试版本（保留控制台）'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -45,10 +51,14 @@ jobs:
     - name: Build with PyInstaller (Windows)
       if: matrix.os == 'windows-latest'
       run: python build.py
+      env:
+        DEBUG_BUILD: ${{ github.event.inputs.debug_build == 'true' && '1' || '0' }}
 
     - name: Build with PyInstaller (macOS)
       if: matrix.os == 'macos-latest'
       run: python build.py
+      env:
+        DEBUG_BUILD: ${{ github.event.inputs.debug_build == 'true' && '1' || '0' }}
 
     - name: Create DMG (macOS only)
       if: matrix.os == 'macos-latest'
@@ -88,7 +98,7 @@ jobs:
       if: matrix.os == 'windows-latest'
       uses: actions/upload-artifact@v4
       with:
-        name: LunarEclipseAlignTool-${{ matrix.platform }}-${{ steps.get_version.outputs.version }}
+        name: LunarEclipseAlignTool-${{ matrix.platform }}-${{ steps.get_version.outputs.version }}${{ github.event.inputs.debug_build == 'true' && '-debug' || '' }}
         path: dist/Lunar Eclipse Align Tool.exe
         if-no-files-found: error
 
@@ -96,12 +106,12 @@ jobs:
       if: matrix.os == 'macos-latest'
       uses: actions/upload-artifact@v4
       with:
-        name: LunarEclipseAlignTool-${{ matrix.platform }}-${{ steps.get_version.outputs.version }}
+        name: LunarEclipseAlignTool-${{ matrix.platform }}-${{ steps.get_version.outputs.version }}${{ github.event.inputs.debug_build == 'true' && '-debug' || '' }}
         path: dist/${{ matrix.asset_name }}
         if-no-files-found: error
 
     - name: Upload to Release (Windows)
-      if: startsWith(github.ref, 'refs/tags/') && matrix.os == 'windows-latest'
+      if: startsWith(github.ref, 'refs/tags/') && matrix.os == 'windows-latest' && github.event.inputs.debug_build != 'true'
       uses: softprops/action-gh-release@v1
       with:
         files: dist/Lunar Eclipse Align Tool.exe
@@ -111,7 +121,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Upload to Release (macOS)
-      if: startsWith(github.ref, 'refs/tags/') && matrix.os == 'macos-latest'
+      if: startsWith(github.ref, 'refs/tags/') && matrix.os == 'macos-latest' && github.event.inputs.debug_build != 'true'
       uses: softprops/action-gh-release@v1
       with:
         files: dist/${{ matrix.asset_name }}
@@ -124,7 +134,7 @@ jobs:
     name: Create Release Notes
     runs-on: ubuntu-latest
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') && github.event.inputs.debug_build != 'true'
 
     steps:
     - name: Get version

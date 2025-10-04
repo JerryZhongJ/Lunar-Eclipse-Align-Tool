@@ -22,6 +22,9 @@ APP_NAME = "Lunar Eclipse Align Tool"
 ENTRY = "lunar_eclipse_align/main.py"
 from lunar_eclipse_align import __version__ as VERSION
 
+# 调试模式：保留控制台窗口
+DEBUG_BUILD = os.environ.get("DEBUG_BUILD", "0") == "1"
+
 
 def sep():
     """PyInstaller --add-data 的路径分隔符：Windows 用 ; 其余用 :"""
@@ -84,12 +87,17 @@ def main():
         "--name",
         APP_NAME,
         "--onedir" if platform.system() == "Darwin" else "--onefile",
-        "--windowed",  # GUI 程序，不显示控制台
         "--noconfirm",
         "--clean",
         "--log-level",
         "WARN",
     ]
+
+    # 非调试模式下隐藏控制台
+    if not DEBUG_BUILD:
+        args.insert(5, "--windowed")  # GUI 程序，不显示控制台
+    else:
+        print("⚠️  调试模式：保留控制台窗口")
 
     # 注：如果运行时报缺少模块，可按需添加 --hidden-import
     # 例如：
