@@ -7,11 +7,18 @@ name = "lunar-eclipse-align"
 dynamic = ["version"]
 description = "月食圆面对齐工具 - 用于处理月食照片的圆面对齐"
 readme = "README.md"
-license = {text = "MIT"}
-authors = [
-    {name = "正七价的氟离子"}
+license = { text = "MIT" }
+authors = [{ name = "正七价的氟离子" }]
+keywords = [
+    "lunar",
+    "eclipse",
+    "astronomy",
+    "image",
+    "processing",
+    "alignment",
+    "qt",
+    "pyside6",
 ]
-keywords = ["lunar", "eclipse", "astronomy", "image", "processing", "alignment", "qt", "pyside6"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
@@ -32,16 +39,23 @@ requires-python = ">=3.8"
 dependencies = [
     "opencv-python>=4.12.0",
     "numpy>=2.2",
-    "pillow>=11.3",
-    "psutil",
+    "pillow>=11.2",
+    "psutil>=7.1.0",
     "PySide6>=6.9.2",
     "scipy>=1.16",
     "scikit-image>=0.25.2",
-    "imagecodecs>=2025.8.2"
+    "imagecodecs>=2025.8.2",
 ]
 [project.optional-dependencies]
-test = ["pytest>=7.0", "pytest-qt>=4.0", "pytest-cov>=4.0", "pytest-env>=1.1.5", "pyyaml>=6.0", "pydantic>=2.0"]
-dev = ["pyinstaller>=6.0"]
+test = [
+    "pytest>=8.4.2",
+    "pytest-qt>=4.5.0",
+    "pytest-cov>=7.0.0",
+    "pytest-env>=1.1.5",
+    "pyyaml>=6.0.3",
+    "pydantic>=2.0",
+]
+dev = ["pyinstaller>=6.16.0"]
 
 [project.scripts]
 lunar-eclipse-align = "lunar_eclipse_align.main:main"
@@ -74,18 +88,12 @@ markers = [
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
 ]
-env = [
-    "DEBUG=1"
-]
+env = ["DEBUG=1"]
 
 # Coverage 配置
 [tool.coverage.run]
 source = ["lunar_eclipse_align"]
-omit = [
-    "*/tests/*",
-    "*/test_*",
-    "setup.py",
-]
+omit = ["*/tests/*", "*/test_*", "setup.py"]
 
 [tool.coverage.report]
 exclude_lines = [
