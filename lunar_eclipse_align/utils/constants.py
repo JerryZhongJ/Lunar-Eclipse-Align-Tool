@@ -18,3 +18,7 @@ MIN_MEAN_ZNCC = 0.55
 MIN_INLIERS = 6
 RESIDUAL = 2.0
 DEBUG = bool(os.environ.get("DEBUG", False))
+
+MAX_LOADED_FILES = 5
+
+MIN_KEEP_FILES = min(1, MAX_LOADED_FILES - 1)

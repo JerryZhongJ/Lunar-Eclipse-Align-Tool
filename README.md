@@ -2,7 +2,7 @@
 
 一个用于月食照片批量对齐的工具，基于 PHD2 增强算法和多 ROI 精配准技术。
 
-![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
+![Python](https://img.shields.io/badge/Python-3.13+-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)
 
@@ -23,14 +23,21 @@
 
 ### Linux 用户
 
-#### 系统要求
+#### 系统配置
 
-- Python 3.8 或更高版本
-- 建议使用 Python 3.11
+- Python >= 3.13
+- PySide6 >= 6.9.3
+
+建议使用conda配置：
+```bash
+conda create -n lunar-eclipse-align 
+conda activate lunar-eclipse-align
+conda install python>=3.13 pyside6>=6.9.3
+```
 
 #### 安装步骤
 
-**方式 1：从源码安装**
+<!-- **方式 1：从源码安装** -->
 
 ```bash
 # 克隆仓库
@@ -63,16 +70,6 @@ lunar-eclipse-align
 # 或直接运行模块
 python -m lunar_eclipse_align.main
 ```
-
-#### 依赖说明
-
-主要依赖（自动安装）：
-- OpenCV >= 4.12.0（图像处理）
-- NumPy >= 2.2（数值计算）
-- SciPy >= 1.16（科学计算）
-- PySide6 >= 6.9.2（图形界面）
-- scikit-image >= 0.25.2（图像处理）
-- Pillow >= 11.3（图像读写）
 
 ## 使用说明
 

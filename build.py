@@ -14,8 +14,9 @@ from PyInstaller.__main__ import run
 # 设置 UTF-8 编码输出（修复 Windows 控制台中文显示）
 if sys.platform == "win32":
     import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 
 APP_NAME = "Lunar Eclipse Align Tool"
 ENTRY = "lunar_eclipse_align/main.py"
@@ -82,8 +83,7 @@ def main():
         ENTRY,
         "--name",
         APP_NAME,
-        # macOS .app bundles 必须使用 --onedir，其他平台可用 --onefile
-        "--onedir" if platform.system() == "Darwin" else "--onefile",
+        "--onedir",
         "--windowed",  # GUI 程序，不显示控制台
         "--noconfirm",
         "--clean",

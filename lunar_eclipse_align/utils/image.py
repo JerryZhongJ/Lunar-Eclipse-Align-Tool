@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import logging
 from pathlib import Path
+from time import time
 import traceback
 from typing import Any, Literal, Mapping, Type
 from PIL import Image as PILImage
@@ -11,7 +12,11 @@ from numpy.typing import NDArray
 
 import gc
 
-from lunar_eclipse_align.utils.constants import SUPPORTED_EXTS
+from lunar_eclipse_align.utils.constants import (
+    MAX_LOADED_FILES,
+    MIN_KEEP_FILES,
+    SUPPORTED_EXTS,
+)
 import tifffile
 
 # exif的保留比较麻烦，现在的问题是exif和位深度很难两全
@@ -435,8 +440,10 @@ class ImageFile:
     @property
     def image(self) -> Image | None:
         """获取图像对象，按需加载"""
-        if self._mode == "r" and self._image is None:
-            self._image = Image.from_file(self._path)
+        if self._mode == "r":
+            __touch_file__(self)
+            if self._image is None:
+                self._image = Image.from_file(self._path)
         return self._image
 
     @image.setter
@@ -472,3 +479,28 @@ class ImageFile:
 #     print(image.rgb.dtype)
 #     print(image.rgb.shape)
 #     image.save(Path("test_out.tif"))
+
+
+__image_file_timestamps__: dict[ImageFile, float] = {}
+
+
+def __drop_images__():
+    while len(__image_file_timestamps__) > MIN_KEEP_FILES:
+        # 找到最旧的文件并卸载
+        oldest_file = min(
+            __image_file_timestamps__, key=lambda k: __image_file_timestamps__[k]
+        )
+        oldest_file._image = None
+        del __image_file_timestamps__[oldest_file]
+    gc.collect()
+
+
+def __touch_file__(file: ImageFile) -> None:
+    touch_time = time()
+    if file in __image_file_timestamps__:
+        __image_file_timestamps__[file] = touch_time
+
+    if len(__image_file_timestamps__) >= MAX_LOADED_FILES:
+        __drop_images__()
+
+    __image_file_timestamps__[file] = touch_time
